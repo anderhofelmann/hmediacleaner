@@ -1,0 +1,78 @@
+name: Testes
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  sintaxe:
+    runs-on: ubuntu-latest
+
+    name: Sintaxe e testes
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      - name: Conferir sintaxe de todos os arquivos
+        run: |
+          find hmediacleaner -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: Rodar os testes do atualizador
+        run: php testes/teste-atualizador.php
+
+      - name: Conferir que o código não usa recursos do PHP 8
+        run: |
+          if grep -rnP '\?\?=|\bmatch\s*\(|(?<![a-z0-9_>])fn\s*\(' --include='*.php' hmediacleaner; then
+            echo "::error::uso de sintaxe exclusiva do PHP 8"
+            exit 1
+          fi
+
+  compatibilidade:
+    runs-on: ubuntu-latest
+
+    name: PHP ${{ matrix.php }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        php: [ '7.4', '8.0', '8.1', '8.2', '8.3' ]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+
+      - name: Sintaxe e testes
+        run: |
+          find hmediacleaner -name '*.php' -print0 | xargs -0 -n1 php -l
+          php testes/teste-atualizador.php
+
+  build:
+    runs-on: ubuntu-latest
+
+    name: Gerar ZIP
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      - run: ./bin/build-zip.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hmediacleaner
+          path: hmediacleaner-*.zip

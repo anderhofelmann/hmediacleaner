@@ -1,0 +1,18 @@
+# Credenciais - NUNCA versionar
+.env
+.env.*
+
+# Artefatos de build
+*.zip
+
+# Sistema operacional e editores
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Dependencias
+node_modules/
+vendor/
