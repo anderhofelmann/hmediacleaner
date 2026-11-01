@@ -50,6 +50,9 @@ class HMC_Admin {
 				'done'       => __( 'Concluído. Carregando o relatório...', 'hmediacleaner' ),
 				/* translators: 1: processados, 2: total, 3: concluídos, 4: ignorados */
 				'bulkStatus' => __( 'Processados %1$s de %2$s · %3$s concluídos · %4$s ignorados', 'hmediacleaner' ),
+				/* translators: 1: quantidade que seria movida, 2: quantidade que seria ignorada */
+				'previewResult' => __( 'Pré-visualização (nada foi alterado): %1$s arquivos seriam movidos e %2$s seriam ignorados.', 'hmediacleaner' ),
+				'previewWhy'    => __( 'Motivos dos ignorados:', 'hmediacleaner' ),
 			)
 		);
 	}
@@ -163,6 +166,18 @@ class HMC_Admin {
 		return array( $ok, $skip, $msgs, $last );
 	}
 
+	/**
+	 * Operações permitidas sobre órfãos: as de anexos mais "preview" (só confere, não altera nada).
+	 *
+	 * @return true|string
+	 */
+	private static function orphan_op_allowed( $op ) {
+		if ( 'preview' === $op ) {
+			return HMC_DB::scan_is_fresh();
+		}
+		return self::op_allowed( $op );
+	}
+
 	private static function op_allowed( $op ) {
 		if ( ! in_array( $op, array( 'quarantine', 'restore', 'delete' ), true ) ) {
 			return __( 'Operação inválida.', 'hmediacleaner' );
@@ -251,7 +266,7 @@ class HMC_Admin {
 		$kind   = isset( $_POST['kind'] ) ? sanitize_key( $_POST['kind'] ) : '';
 		$cursor = isset( $_POST['cursor'] ) ? preg_replace( '/[^a-f0-9]/', '', strtolower( (string) wp_unslash( $_POST['cursor'] ) ) ) : '';
 		$cursor = '0' === $cursor ? '' : $cursor;
-		$allowed = self::op_allowed( $op );
+		$allowed = self::orphan_op_allowed( $op );
 		if ( true !== $allowed ) {
 			wp_send_json_error( array( 'message' => $allowed ) );
 		}
@@ -266,9 +281,10 @@ class HMC_Admin {
 		$total = '' === $cursor ? (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table} WHERE {$where}" ) : null; // phpcs:ignore WordPress.DB.PreparedSQL
 		$ok    = 0;
 		$skip  = 0;
-		$msgs  = array();
-		$done  = false;
-		$t0    = microtime( true );
+		$msgs    = array();
+		$reasons = array();
+		$done    = false;
+		$t0      = microtime( true );
 		while ( microtime( true ) - $t0 < 8 ) {
 			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT path_key, path FROM {$table} WHERE {$where} AND path_key > %s ORDER BY path_key LIMIT 100", $cursor ) ); // phpcs:ignore WordPress.DB.PreparedSQL
 			if ( ! $rows ) {
@@ -277,13 +293,16 @@ class HMC_Admin {
 			}
 			$paths  = wp_list_pluck( $rows, 'path' );
 			$cursor = end( $rows )->path_key;
-			list( $o, $sk, $m ) = HMC_Orphan_Quarantine::run_batch( $op, $paths );
+			list( $o, $sk, $m, $rs ) = HMC_Orphan_Quarantine::run_batch( $op, $paths );
 			$ok   += $o;
 			$skip += $sk;
 			$msgs  = array_slice( array_merge( $msgs, $m ), 0, 5 );
+			foreach ( $rs as $text => $n ) {
+				$reasons[ $text ] = isset( $reasons[ $text ] ) ? $reasons[ $text ] + $n : $n;
+			}
 		}
 		delete_transient( 'hmc_bulk_lock' );
-		if ( $done ) {
+		if ( $done && 'preview' !== $op ) {
 			HMC_Orphan_Quarantine::refresh_summary();
 		}
 		wp_send_json_success(
@@ -294,6 +313,7 @@ class HMC_Admin {
 				'ok'       => $ok,
 				'skipped'  => $skip,
 				'messages' => $msgs,
+				'reasons'  => $reasons,
 			)
 		);
 	}
@@ -399,7 +419,10 @@ class HMC_Admin {
 		if ( ! current_user_can( self::CAP ) ) {
 			return;
 		}
-		$tab     = isset( $_GET['tab'] ) ? sanitize_key( $_GET['tab'] ) : 'report'; // phpcs:ignore WordPress.Security.NonceVerification
+		// Sem "tab": a Visão geral, salvo quando a URL traz filtros do relatório (visão, busca, página, ordem).
+		$has_report_args = isset( $_GET['view'] ) || isset( $_GET['s'] ) || isset( $_GET['paged'] ) || isset( $_GET['orderby'] ) || isset( $_GET['hmc_msg'] ); // phpcs:ignore WordPress.Security.NonceVerification
+		$tab     = isset( $_GET['tab'] ) ? sanitize_key( $_GET['tab'] ) : ( $has_report_args ? 'report' : 'overview' ); // phpcs:ignore WordPress.Security.NonceVerification
+		$tab     = in_array( $tab, array( 'overview', 'report', 'orphans', 'history', 'settings', 'about' ), true ) ? $tab : 'overview';
 		$state   = HMC_Scanner::state();
 		$summary = get_option( 'hmc_summary' );
 		$running = '' !== $state['step'] && ! $state['finished'];
@@ -414,52 +437,42 @@ class HMC_Admin {
 			<?php if ( $notice ) : ?>
 				<div class="notice notice-<?php echo esc_attr( $notice[0] ); ?> is-dismissible"><p><?php echo esc_html( $notice[1] ); ?></p></div>
 			<?php endif; ?>
-			<p class="hmc-lead"><?php esc_html_e( 'Encontra arquivos da biblioteca de mídia sem uso e duplicados, procurando referências em todo o site: conteúdo, produtos e galerias, construtores de página, categorias, configurações, arquivos do tema e as páginas já montadas. Os arquivos sem uso podem ir para a quarentena, de onde voltam com um clique.', 'hmediacleaner' ); ?></p>
+			<p class="hmc-lead"><?php esc_html_e( 'Encontra arquivos da biblioteca de mídia sem uso, duplicados e órfãos, procurando referências em todo o site: conteúdo, produtos e galerias, construtores de página, categorias, configurações, arquivos do tema e as páginas já montadas. Os arquivos sem uso podem ir para a quarentena, de onde voltam com um clique.', 'hmediacleaner' ); ?></p>
 
 			<nav class="nav-tab-wrapper">
-				<a href="<?php echo esc_url( $base ); ?>" class="nav-tab <?php echo in_array( $tab, array( 'settings', 'about', 'orphans' ), true ) ? '' : 'nav-tab-active'; ?>"><?php esc_html_e( 'Relatório', 'hmediacleaner' ); ?></a>
-				<a href="<?php echo esc_url( $base . '&tab=orphans' ); ?>" class="nav-tab <?php echo 'orphans' === $tab ? 'nav-tab-active' : ''; ?>"><?php esc_html_e( 'Órfãos', 'hmediacleaner' ); ?></a>
-				<a href="<?php echo esc_url( $base . '&tab=settings' ); ?>" class="nav-tab <?php echo 'settings' === $tab ? 'nav-tab-active' : ''; ?>"><?php esc_html_e( 'Configurações', 'hmediacleaner' ); ?></a>
-				<a href="<?php echo esc_url( $base . '&tab=about' ); ?>" class="nav-tab <?php echo 'about' === $tab ? 'nav-tab-active' : ''; ?>"><?php esc_html_e( 'Sobre', 'hmediacleaner' ); ?></a>
+				<?php
+				$tabs = array(
+					'overview' => __( 'Visão geral', 'hmediacleaner' ),
+					'report'   => __( 'Relatório', 'hmediacleaner' ),
+					'orphans'  => __( 'Órfãos', 'hmediacleaner' ),
+					'history'  => __( 'Histórico', 'hmediacleaner' ),
+					'settings' => __( 'Configurações', 'hmediacleaner' ),
+					'about'    => __( 'Sobre', 'hmediacleaner' ),
+				);
+				foreach ( $tabs as $key => $label ) {
+					printf( '<a href="%s" class="nav-tab %s">%s</a>', esc_url( 'overview' === $key ? $base : $base . '&tab=' . $key ), $tab === $key ? 'nav-tab-active' : '', esc_html( $label ) );
+				}
+				?>
 			</nav>
 
 			<?php
-			if ( in_array( $tab, array( 'settings', 'about', 'orphans' ), true ) ) {
-				if ( 'settings' === $tab ) {
+			if ( 'report' !== $tab ) {
+				if ( 'overview' === $tab ) {
+					$this->overview_tab( $running, $state, $summary );
+				} elseif ( 'settings' === $tab ) {
 					$this->settings_tab();
 				} elseif ( 'orphans' === $tab ) {
 					$this->orphans_tab( $running );
+				} elseif ( 'history' === $tab ) {
+					$this->history_tab();
 				} else {
 					$this->about_tab();
 				}
 				echo '</div>';
 				return;
 			}
+			$this->scan_block( $state, $summary, $running );
 			?>
-
-			<div class="hmc-scan">
-				<p>
-					<button type="button" class="button button-primary" id="hmc-start" <?php disabled( $running ); ?>><?php esc_html_e( 'Iniciar nova análise', 'hmediacleaner' ); ?></button>
-					<?php if ( $running ) : ?>
-						<button type="button" class="button" id="hmc-continue"><?php esc_html_e( 'Continuar análise', 'hmediacleaner' ); ?></button>
-					<?php endif; ?>
-					<?php if ( $summary ) : ?>
-						<span class="hmc-muted">
-							<?php
-							/* translators: 1: data, 2: duração */
-							printf( esc_html__( 'Última análise: %1$s (levou %2$s).', 'hmediacleaner' ), esc_html( wp_date( get_option( 'date_format' ) . ' H:i', $summary['finished'] ) ), esc_html( human_time_diff( 0, max( 1, $summary['duration'] ) ) ) );
-							?>
-						</span>
-					<?php endif; ?>
-				</p>
-				<?php $p = self::progress( $state ); ?>
-				<div id="hmc-progress" class="hmc-progress" <?php echo $running ? '' : 'hidden'; ?> data-running="<?php echo $running ? '1' : '0'; ?>">
-					<p class="hmc-progress-head"><strong id="hmc-step"><?php echo esc_html( $p['step'] ); ?></strong> · <span id="hmc-label"><?php echo esc_html( $p['label'] ); ?></span></p>
-					<div class="hmc-bar<?php echo null === $p['percent'] ? ' is-indeterminate' : ''; ?>"><span style="width:<?php echo null === $p['percent'] ? 100 : (int) $p['percent']; ?>%"></span></div>
-					<p><span id="hmc-detail" class="hmc-muted"><?php echo esc_html( $p['detail'] ); ?></span></p>
-					<p class="hmc-muted"><?php esc_html_e( 'A análise roda em pequenas etapas para não pesar no site. Mantenha esta página aberta; se fechar, é possível continuar depois.', 'hmediacleaner' ); ?></p>
-				</div>
-			</div>
 
 			<?php
 			if ( $summary && ! $running ) {
@@ -523,6 +536,236 @@ class HMC_Admin {
 	}
 
 	/**
+	 * Botão "Iniciar nova análise", progresso e data da última análise (usado na Visão geral e no Relatório).
+	 */
+	private function scan_block( array $state, $summary, $running ) {
+		?>
+		<div class="hmc-scan">
+			<p>
+				<button type="button" class="button button-primary" id="hmc-start" <?php disabled( $running ); ?>><?php esc_html_e( 'Iniciar nova análise', 'hmediacleaner' ); ?></button>
+				<?php if ( $running ) : ?>
+					<button type="button" class="button" id="hmc-continue"><?php esc_html_e( 'Continuar análise', 'hmediacleaner' ); ?></button>
+				<?php endif; ?>
+				<?php if ( $summary ) : ?>
+					<span class="hmc-muted">
+						<?php
+						/* translators: 1: data, 2: duração */
+						printf( esc_html__( 'Última análise: %1$s (levou %2$s).', 'hmediacleaner' ), esc_html( wp_date( get_option( 'date_format' ) . ' H:i', $summary['finished'] ) ), esc_html( human_time_diff( 0, max( 1, $summary['duration'] ) ) ) );
+						?>
+					</span>
+				<?php endif; ?>
+			</p>
+			<?php $p = self::progress( $state ); ?>
+			<div id="hmc-progress" class="hmc-progress" <?php echo $running ? '' : 'hidden'; ?> data-running="<?php echo $running ? '1' : '0'; ?>">
+				<p class="hmc-progress-head"><strong id="hmc-step"><?php echo esc_html( $p['step'] ); ?></strong> · <span id="hmc-label"><?php echo esc_html( $p['label'] ); ?></span></p>
+				<div class="hmc-bar<?php echo null === $p['percent'] ? ' is-indeterminate' : ''; ?>"><span style="width:<?php echo null === $p['percent'] ? 100 : (int) $p['percent']; ?>%"></span></div>
+				<p><span id="hmc-detail" class="hmc-muted"><?php echo esc_html( $p['detail'] ); ?></span></p>
+				<p class="hmc-muted"><?php esc_html_e( 'A análise roda em pequenas etapas para não pesar no site. Mantenha esta página aberta; se fechar, é possível continuar depois.', 'hmediacleaner' ); ?></p>
+			</div>
+		</div>
+		<?php
+	}
+
+	/** Barra de progresso das operações em lote e área do resultado da pré-visualização. */
+	private function bulk_progress_markup() {
+		return '<div id="hmc-bulk-progress" class="hmc-progress" hidden><div class="hmc-bar"><span style="width:0%"></span></div><p id="hmc-bulk-status" class="hmc-muted"></p><ul id="hmc-bulk-msgs" class="hmc-muted"></ul></div><div id="hmc-preview-result" class="notice notice-info inline hmc-preview" hidden></div>';
+	}
+
+	/** Selo de risco de um tipo de órfão. */
+	private function risk_badge( $kind ) {
+		$risk   = HMC_Orphans::risk( $kind );
+		$labels = array(
+			'low'    => __( 'Risco baixo', 'hmediacleaner' ),
+			'medium' => __( 'Risco médio', 'hmediacleaner' ),
+			'high'   => __( 'Risco alto', 'hmediacleaner' ),
+		);
+		return '<span class="hmc-risk hmc-risk-' . esc_attr( $risk ) . '">' . esc_html( $labels[ $risk ] ) . '</span>';
+	}
+
+	/**
+	 * Visão geral: quanto espaço dá para recuperar, onde ele está e por onde começar.
+	 */
+	private function overview_tab( $running, array $state, $summary ) {
+		$base = admin_url( 'upload.php?page=hmediacleaner' );
+		$this->scan_block( $state, $summary, $running );
+		echo $this->bulk_progress_markup(); // Marcação fixa deste arquivo.
+		if ( $running ) {
+			return;
+		}
+		if ( ! $summary ) {
+			echo '<div class="hmc-hero"><h2>' . esc_html__( 'Vamos começar', 'hmediacleaner' ) . '</h2><p>' . esc_html__( 'Faça a primeira análise: o plugin procura referências a cada arquivo em todo o site, sem alterar nada. Em seguida mostra quanto espaço dá para recuperar e por onde começar, do mais seguro ao mais sensível.', 'hmediacleaner' ) . '</p></div>';
+			return;
+		}
+		$st      = $summary['status'];
+		$get     = function ( $k ) use ( $st ) {
+			return isset( $st[ $k ] ) ? $st[ $k ] : array( 'count' => 0, 'bytes' => 0 );
+		};
+		$osum    = get_option( 'hmc_orphan_summary' );
+		$counts  = isset( $osum['kinds'] ) && is_array( $osum['kinds'] ) ? $osum['kinds'] : array();
+		$kinds   = HMC_Orphans::kinds();
+		$qsum    = HMC_Orphan_Quarantine::summary();
+		$fresh   = HMC_DB::scan_is_fresh();
+		$items_n = $get( 'unused' )['count'] + $get( 'attached' )['count'];
+		$items_b = $get( 'unused' )['bytes'] + $get( 'attached' )['bytes'];
+
+		$risk = array( 'low' => 0, 'medium' => 0, 'high' => 0 );
+		foreach ( HMC_Orphans::movable_kinds() as $k ) {
+			if ( isset( $counts[ $k ] ) ) {
+				$risk[ HMC_Orphans::risk( $k ) ] += (int) $counts[ $k ]['bytes'];
+			}
+		}
+		$q_orph_b = 0;
+		$q_orph_h = 0;
+		foreach ( $qsum as $r ) {
+			$q_orph_b += $r['bytes'];
+			$q_orph_h += $r['hits'];
+		}
+		$q_att   = isset( $summary['quarantine'] ) ? $summary['quarantine'] : array( 'count' => 0, 'bytes' => 0, 'alert' => 0 );
+		$q_bytes = $q_orph_b + (int) $q_att['bytes'];
+		$all     = $risk['low'] + $risk['medium'] + $risk['high'] + $items_b;
+
+		// Hero.
+		echo '<div class="hmc-hero">';
+		echo '<p class="hmc-hero-label">' . esc_html__( 'Espaço que você pode recuperar', 'hmediacleaner' ) . '</p>';
+		echo '<p class="hmc-hero-num">' . esc_html( size_format( $all, 1 ) ) . '</p>';
+		/* translators: 1: tamanho de risco baixo, 2: tamanho de risco médio, 3: tamanho de risco alto */
+		echo '<p class="hmc-hero-sub">' . esc_html( sprintf( __( '%1$s com risco baixo · %2$s com risco médio (inclui itens sem uso da biblioteca) · %3$s com risco alto', 'hmediacleaner' ), size_format( $risk['low'], 1 ), size_format( $risk['medium'] + $items_b, 1 ), size_format( $risk['high'], 1 ) ) ) . '</p>';
+		echo '<p class="hmc-hero-note">' . esc_html__( 'Nada é apagado direto: tudo passa primeiro por uma quarentena restaurável, e o plugin vigia se algum arquivo faz falta.', 'hmediacleaner' ) . '</p>';
+		echo '</div>';
+
+		if ( true !== $fresh ) {
+			echo '<div class="notice notice-warning inline"><p>' . esc_html( $fresh ) . '</p></div>';
+		}
+		if ( $q_orph_h || ! empty( $q_att['alert'] ) ) {
+			echo '<div class="notice notice-error inline hmc-alert"><p><strong>' . esc_html__( 'Há arquivos em quarentena que parecem fazer falta.', 'hmediacleaner' ) . '</strong> <a href="' . esc_url( $base . '&tab=orphans' ) . '">' . esc_html__( 'Ver e restaurar', 'hmediacleaner' ) . '</a></p></div>';
+		}
+
+		// Gráfico de espaço (barra empilhada em CSS, com legenda em texto).
+		$seg = array(
+			array( 'used', __( 'Em uso', 'hmediacleaner' ), $get( 'used' )['bytes'] ),
+			array( 'items', __( 'Itens sem uso', 'hmediacleaner' ), $items_b ),
+			array( 'low', __( 'Órfãos de risco baixo', 'hmediacleaner' ), $risk['low'] ),
+			array( 'medium', __( 'Órfãos de risco médio', 'hmediacleaner' ), $risk['medium'] ),
+			array( 'high', __( 'Originais grandes', 'hmediacleaner' ), $risk['high'] ),
+			array( 'quarantine', __( 'Em quarentena', 'hmediacleaner' ), $q_bytes ),
+		);
+		$sum_b = 0;
+		foreach ( $seg as $x ) {
+			$sum_b += $x[2];
+		}
+		if ( $sum_b > 0 ) {
+			echo '<h2>' . esc_html__( 'Onde está o espaço', 'hmediacleaner' ) . '</h2>';
+			echo '<div class="hmc-chart" role="img" aria-label="' . esc_attr__( 'Distribuição do espaço analisado', 'hmediacleaner' ) . '">';
+			foreach ( $seg as $x ) {
+				if ( $x[2] > 0 ) {
+					printf( '<span class="hmc-seg hmc-seg-%s" style="width:%s%%" title="%s"></span>', esc_attr( $x[0] ), esc_attr( number_format( max( 0.6, $x[2] / $sum_b * 100 ), 2, '.', '' ) ), esc_attr( $x[1] . ': ' . size_format( $x[2], 1 ) ) );
+				}
+			}
+			echo '</div><ul class="hmc-legend">';
+			foreach ( $seg as $x ) {
+				if ( $x[2] > 0 ) {
+					printf( '<li><span class="hmc-dot hmc-seg-%s"></span>%s <strong>%s</strong> <span class="hmc-muted">(%s%%)</span></li>', esc_attr( $x[0] ), esc_html( $x[1] ), esc_html( size_format( $x[2], 1 ) ), esc_html( number_format_i18n( $x[2] / $sum_b * 100, 1 ) ) );
+				}
+			}
+			echo '</ul>';
+		}
+
+		// Plano recomendado: do mais seguro ao mais sensível.
+		$steps = array();
+		foreach ( HMC_Orphans::plan_order() as $k ) {
+			if ( 'webp' === $k && $items_n ) {
+				$steps[] = array( 'items', null );
+			}
+			if ( isset( $counts[ $k ] ) && (int) $counts[ $k ]['count'] > 0 ) {
+				$steps[] = array( 'orphan', $k );
+			}
+		}
+		if ( $items_n && ! array_filter( $steps, function ( $x ) { return 'items' === $x[0]; } ) ) {
+			$steps[] = array( 'items', null );
+		}
+		echo '<h2>' . esc_html__( 'Plano recomendado', 'hmediacleaner' ) . '</h2>';
+		echo '<p class="hmc-muted">' . esc_html__( 'Siga a ordem: começa pelo que é mais seguro. Use "Pré-visualizar" para ver o que seria movido sem alterar nada, e confira o resultado antes do passo seguinte.', 'hmediacleaner' ) . '</p>';
+		if ( ! $steps ) {
+			echo '<p>' . esc_html__( 'Nada a recuperar por enquanto.', 'hmediacleaner' ) . '</p>';
+		} else {
+			echo '<ol class="hmc-plan">';
+			$n = 0;
+			foreach ( $steps as $step ) {
+				$n++;
+				if ( 'items' === $step[0] ) {
+					$title = __( 'Itens da biblioteca sem uso', 'hmediacleaner' );
+					$badge = '<span class="hmc-risk hmc-risk-medium">' . esc_html__( 'Risco médio', 'hmediacleaner' ) . '</span>';
+					$desc  = __( 'Imagens enviadas que nenhuma página, produto ou configuração usa. Revise a lista e mova para a quarentena.', 'hmediacleaner' );
+					$meta  = sprintf( /* translators: 1: quantidade, 2: tamanho */ __( '%1$s itens · %2$s', 'hmediacleaner' ), number_format_i18n( $items_n ), size_format( $items_b, 1 ) );
+					$acts  = '<a class="button" href="' . esc_url( $base . '&tab=report&view=unused' ) . '">' . esc_html__( 'Revisar itens', 'hmediacleaner' ) . '</a>';
+				} else {
+					$k     = $step[1];
+					$title = $kinds[ $k ][0];
+					$badge = $this->risk_badge( $k );
+					$desc  = $kinds[ $k ][1];
+					$meta  = sprintf( /* translators: 1: quantidade, 2: tamanho */ __( '%1$s arquivos · %2$s', 'hmediacleaner' ), number_format_i18n( (int) $counts[ $k ]['count'] ), size_format( (int) $counts[ $k ]['bytes'], 1 ) );
+					$acts  = '';
+					if ( true === $fresh ) {
+						$acts  = $this->orphan_button( 'preview', $k, __( 'Pré-visualizar', 'hmediacleaner' ), '' ) . ' ';
+						$acts .= $this->orphan_button( 'quarantine', $k, __( 'Mover para a quarentena', 'hmediacleaner' ), $this->quarantine_confirm( $k, (int) $counts[ $k ]['count'], (int) $counts[ $k ]['bytes'], $title ), 'button-primary' );
+					}
+					if ( isset( $qsum[ $k ] ) ) {
+						$meta .= ' · ' . sprintf( /* translators: 1: quantidade, 2: tamanho */ __( '%1$s já em quarentena (%2$s)', 'hmediacleaner' ), number_format_i18n( $qsum[ $k ]['count'] ), size_format( $qsum[ $k ]['bytes'], 1 ) );
+					}
+				}
+				printf(
+					'<li class="hmc-step"><div class="hmc-step-n">%d</div><div class="hmc-step-body"><div class="hmc-step-head"><strong>%s</strong> %s <span class="hmc-muted">%s</span></div><p>%s</p><div class="hmc-step-actions">%s</div></div></li>',
+					(int) $n,
+					esc_html( $title ),
+					$badge, // Já escapado.
+					esc_html( $meta ),
+					esc_html( $desc ),
+					$acts // Já escapado em orphan_button() / esc_url().
+				);
+			}
+			echo '</ol>';
+		}
+		if ( $q_bytes ) {
+			/* translators: %s: tamanho */
+			echo '<p class="hmc-free">' . esc_html( sprintf( __( 'Em quarentena agora: %s.', 'hmediacleaner' ), size_format( $q_bytes, 1 ) ) ) . ' <a href="' . esc_url( $base . '&tab=orphans' ) . '">' . esc_html__( 'Gerenciar a quarentena', 'hmediacleaner' ) . '</a> · <a href="' . esc_url( $base . '&tab=history' ) . '">' . esc_html__( 'Ver o histórico', 'hmediacleaner' ) . '</a></p>';
+		}
+	}
+
+	/**
+	 * Histórico das operações (lido do log da quarentena).
+	 */
+	private function history_tab() {
+		$rows   = HMC_Quarantine::read_log( 200 );
+		$labels = array(
+			'quarentena'       => __( 'Item movido para a quarentena', 'hmediacleaner' ),
+			'restaurado'       => __( 'Item restaurado', 'hmediacleaner' ),
+			'excluido'         => __( 'Item excluído definitivamente', 'hmediacleaner' ),
+			'quarentena-orfao' => __( 'Órfão movido para a quarentena', 'hmediacleaner' ),
+			'restaurado-orfao' => __( 'Órfão restaurado', 'hmediacleaner' ),
+			'excluido-orfao'   => __( 'Órfão excluído definitivamente', 'hmediacleaner' ),
+		);
+		echo '<p class="hmc-lead">' . esc_html__( 'Tudo o que o plugin moveu, restaurou ou excluiu, da operação mais recente para a mais antiga (últimas 200).', 'hmediacleaner' ) . '</p>';
+		if ( ! $rows ) {
+			echo '<p>' . esc_html__( 'Nenhuma operação registrada ainda.', 'hmediacleaner' ) . '</p>';
+			return;
+		}
+		echo '<table class="widefat striped"><thead><tr><th>' . esc_html__( 'Data', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Usuário', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Operação', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Arquivo(s)', 'hmediacleaner' ) . '</th></tr></thead><tbody>';
+		foreach ( $rows as $r ) {
+			$files = array_filter( explode( ' | ', $r['files'] ) );
+			$first = $files ? ltrim( (string) reset( $files ), "'" ) : '';
+			$more  = count( $files ) > 1 ? ' ' . sprintf( /* translators: %d: quantidade */ __( '(+%d)', 'hmediacleaner' ), count( $files ) - 1 ) : '';
+			printf(
+				'<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>',
+				esc_html( $r['date'] ),
+				esc_html( $r['user'] ),
+				esc_html( isset( $labels[ $r['action'] ] ) ? $labels[ $r['action'] ] : $r['action'] ),
+				esc_html( $first . $more )
+			);
+		}
+		echo '</tbody></table>';
+	}
+
+	/**
 	 * Arquivos órfãos: relatório, quarentena restaurável e exclusão definitiva (só depois do prazo e sem acessos).
 	 */
 	private function orphans_tab( $running ) {
@@ -547,7 +790,7 @@ class HMC_Admin {
 		/* translators: %s: tamanho */
 		echo '<p class="hmc-free">' . esc_html( sprintf( __( 'Espaço potencialmente recuperável (sem contar as cópias WebP): %s', 'hmediacleaner' ), size_format( $free, 1 ) ) ) . '</p>';
 
-		echo '<table class="widefat striped hmc-about-table"><thead><tr><th>' . esc_html__( 'Tipo', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Arquivos', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Espaço', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'O que é', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Ação', 'hmediacleaner' ) . '</th></tr></thead><tbody>';
+		echo '<table class="widefat striped hmc-about-table"><thead><tr><th>' . esc_html__( 'Tipo', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Risco', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Arquivos', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Espaço', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'O que é', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Ação', 'hmediacleaner' ) . '</th></tr></thead><tbody>';
 		$fresh = HMC_DB::scan_is_fresh();
 		foreach ( $kinds as $k => $def ) {
 			$n = isset( $counts[ $k ] ) ? (int) $counts[ $k ]['count'] : 0;
@@ -556,12 +799,13 @@ class HMC_Admin {
 			}
 			$action = '';
 			if ( in_array( $k, HMC_Orphans::movable_kinds(), true ) ) {
-				$action = true === $fresh ? $this->orphan_button( 'quarantine', $k, __( 'Mover para a quarentena', 'hmediacleaner' ), $this->quarantine_confirm( $k, $n, (int) $counts[ $k ]['bytes'], $def[0] ) ) : '<span class="hmc-muted">' . esc_html__( 'Faça uma nova análise', 'hmediacleaner' ) . '</span>';
+				$action = true === $fresh ? $this->orphan_button( 'preview', $k, __( 'Pré-visualizar', 'hmediacleaner' ), '' ) . ' ' . $this->orphan_button( 'quarantine', $k, __( 'Mover para a quarentena', 'hmediacleaner' ), $this->quarantine_confirm( $k, $n, (int) $counts[ $k ]['bytes'], $def[0] ) ) : '<span class="hmc-muted">' . esc_html__( 'Faça uma nova análise', 'hmediacleaner' ) . '</span>';
 			}
 			printf(
-				'<tr><td><a href="%s"><strong>%s</strong></a></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>',
+				'<tr><td><a href="%s"><strong>%s</strong></a></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>',
 				esc_url( add_query_arg( 'kind', $k, $base ) ),
 				esc_html( $def[0] ),
+				$this->risk_badge( $k ), // Já escapado.
 				esc_html( number_format_i18n( $n ) ),
 				esc_html( size_format( (int) $counts[ $k ]['bytes'], 1 ) ),
 				esc_html( $def[1] ),
@@ -639,7 +883,7 @@ class HMC_Admin {
 	private function orphan_quarantine_panel( $base, array $kinds ) {
 		global $wpdb;
 		$sum = HMC_Orphan_Quarantine::summary();
-		echo '<div id="hmc-bulk-progress" class="hmc-progress" hidden><div class="hmc-bar"><span style="width:0%"></span></div><p id="hmc-bulk-status" class="hmc-muted"></p><ul id="hmc-bulk-msgs" class="hmc-muted"></ul></div>';
+		echo $this->bulk_progress_markup(); // Marcação fixa deste arquivo.
 		if ( ! $sum ) {
 			return;
 		}

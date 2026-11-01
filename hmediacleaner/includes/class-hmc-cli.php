@@ -232,11 +232,15 @@ class HMC_CLI {
 	 * --kind=<kind>
 	 * : thumb, scaled, edit, webp, junk, empty, original ou loose. ("in_use" nunca é movido.)
 	 *
+	 * [--dry-run]
+	 * : Só conferir: mostra quantos seriam movidos e por que os outros seriam ignorados, sem tocar em nada.
+	 *
 	 * [--yes]
 	 * : Não pedir confirmação.
 	 *
 	 * ## EXAMPLES
 	 *
+	 *     wp hmediacleaner orphans-quarantine --kind=junk --dry-run
 	 *     wp hmediacleaner orphans-quarantine --kind=junk
 	 *
 	 * @subcommand orphans-quarantine
@@ -250,7 +254,7 @@ class HMC_CLI {
 		if ( ! in_array( $kind, HMC_Orphans::movable_kinds(), true ) ) {
 			WP_CLI::error( 'Informe --kind com um destes tipos: ' . implode( ', ', HMC_Orphans::movable_kinds() ) );
 		}
-		$this->orphan_bulk( 'quarantine', $kind, $assoc, 'Mover %d arquivos órfãos para a quarentena?' );
+		$this->orphan_bulk( ! empty( $assoc['dry-run'] ) ? 'preview' : 'quarantine', $kind, $assoc, 'Mover %d arquivos órfãos para a quarentena?' );
 	}
 
 	/**
@@ -313,8 +317,11 @@ class HMC_CLI {
 			WP_CLI::success( 'Nada a fazer.' );
 			return;
 		}
-		WP_CLI::confirm( sprintf( $question, $total ), $assoc );
+		if ( 'preview' !== $op ) {
+			WP_CLI::confirm( sprintf( $question, $total ), $assoc );
+		}
 		$progress = WP_CLI\Utils\make_progress_bar( 'Processando', $total );
+		$reasons  = array();
 		$cursor   = '';
 		$ok       = 0;
 		$skip     = 0;
@@ -324,15 +331,26 @@ class HMC_CLI {
 				break;
 			}
 			$cursor = end( $rows )->path_key;
-			list( $o, $sk, $msgs ) = HMC_Orphan_Quarantine::run_batch( $op, wp_list_pluck( $rows, 'path' ) );
+			list( $o, $sk, $msgs, $rs ) = HMC_Orphan_Quarantine::run_batch( $op, wp_list_pluck( $rows, 'path' ) );
 			$ok   += $o;
 			$skip += $sk;
+			foreach ( $rs as $text => $n ) {
+				$reasons[ $text ] = isset( $reasons[ $text ] ) ? $reasons[ $text ] + $n : $n;
+			}
 			foreach ( $msgs as $m ) {
 				WP_CLI::debug( $m, 'hmediacleaner' );
 			}
 			$progress->tick( count( $rows ) );
 		}
 		$progress->finish();
+		if ( 'preview' === $op ) {
+			WP_CLI::log( sprintf( 'Pré-visualização (nada foi alterado): %d seriam movidos, %d seriam ignorados.', $ok, $skip ) );
+			arsort( $reasons );
+			foreach ( $reasons as $text => $n ) {
+				WP_CLI::log( sprintf( '  %d × %s', $n, $text ) );
+			}
+			return;
+		}
 		HMC_Orphan_Quarantine::refresh_summary();
 		WP_CLI::success( sprintf( '%d concluído(s), %d ignorado(s).', $ok, $skip ) );
 	}

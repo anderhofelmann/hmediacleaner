@@ -6,6 +6,16 @@ Plugin de WordPress que encontra **arquivos da biblioteca de mídia sem uso e du
 
 ---
 
+## Tela inicial (Visão geral)
+
+Ao abrir **Mídia → HMediaCleaner**, a primeira tela mostra quanto espaço dá para recuperar, um gráfico de onde ele está (em uso, itens sem uso, órfãos por risco, quarentena) e um **plano recomendado**, do mais seguro ao mais sensível:
+
+1. Logs e arquivos vazios · 2. Versões editadas e `-scaled` · 3. Miniaturas antigas · 4. Itens sem uso da biblioteca · 5. Cópias WebP/AVIF · 6. Arquivos soltos · 7. **Originais grandes** (por último).
+
+Cada tipo traz um selo de **risco** (baixo, médio, alto). Antes de mover, use **Pré-visualizar**: o plugin mostra quantos arquivos seriam movidos e por que os outros seriam ignorados (recente, mudou desde a análise, passou a ser registrado...), com as mesmas conferências da quarentena e sem alterar nada. Pela linha de comando: `wp hmediacleaner orphans-quarantine --kind=junk --dry-run`.
+
+A aba **Histórico** lista as últimas operações registradas (movido, restaurado, excluído).
+
 ## O que ele faz
 
 Antes de considerar uma imagem "sem uso", o plugin procura referências em:

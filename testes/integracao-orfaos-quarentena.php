@@ -228,6 +228,32 @@ hmc_ok( 'resumo conta o arquivo com acesso', true, ! empty( $res['thumb'] ) && $
 hmc_ok( 'a miniatura deste teste está em quarentena e com 1 acesso', array( 'quarantined', 1 ), array( $qrow( $miniatura )->q_status, (int) $qrow( $miniatura )->q_hits ) );
 hmc_ok( 'in_use não aparece nas seleções de quarentena', 0, (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$o} WHERE kind = 'in_use' AND " . HMC_Orphan_Quarantine::selection( 'quarantine', '' )[1] ) );
 
+echo "Pré-visualização, consulta por lote e histórico\n";
+$pv_a = "{$mes}$tag-pv-a.log";
+$pv_b = "{$mes}$tag-pv-b.log";
+hmc_f( $pv_a, 'pv a', $velho );
+hmc_f( $pv_b, 'pv b', time() );
+hmc_scan();
+list( $pok, $pign, , $prs ) = HMC_Orphan_Quarantine::run_batch( 'preview', array( $pv_a, $pv_b ) );
+hmc_ok( 'pré-visualização: 1 seria movido', 1, $pok );
+hmc_ok( 'pré-visualização: 1 seria ignorado', 1, $pign );
+hmc_ok( 'pré-visualização agrupa o motivo (arquivo recente)', true, (bool) array_filter( array_keys( $prs ), function ( $m ) { return false !== strpos( $m, 'menos de' ); } ) );
+hmc_ok( 'pré-visualização não moveu o antigo', true, file_exists( $base . $pv_a ) );
+hmc_ok( 'pré-visualização não moveu o recente', true, file_exists( $base . $pv_b ) );
+hmc_ok( 'pré-visualização não registrou nada em quarentena', 0, (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$oq} WHERE path IN (%s,%s)", $pv_a, $pv_b ) ) );
+hmc_ok( 'inspect aprova o elegível', true, is_array( HMC_Orphan_Quarantine::inspect( $pv_a ) ) );
+hmc_ok( 'inspect recusa o recente com motivo', true, is_string( HMC_Orphan_Quarantine::inspect( $pv_b ) ) );
+hmc_ok( 'o que a pré-visualização aprovou, a quarentena move', true, HMC_Orphan_Quarantine::quarantine( $pv_a ) );
+hmc_ok( 'o que a pré-visualização recusou, a quarentena recusa', true, hmc_recusa( HMC_Orphan_Quarantine::quarantine( $pv_b ) ) );
+hmc_ok( 'consulta por lote acha só o que a biblioteca registra', array( $vira => true ), HMC_Orphan_Quarantine::registered_among( array( $vira, "{$mes}$tag-nao-existe.png", $pv_b ) ) );
+hmc_ok( 'consulta por lote com lista vazia', array(), HMC_Orphan_Quarantine::registered_among( array() ) );
+hmc_ok( 'consulta por lote resiste a aspas no caminho', array(), HMC_Orphan_Quarantine::registered_among( array( "x'); DROP TABLE {$wpdb->posts};--" ) ) );
+hmc_ok( 'a tabela de posts continua existindo', true, (bool) $wpdb->get_var( "SHOW TABLES LIKE '{$wpdb->posts}'" ) );
+$log = HMC_Quarantine::read_log( 5 );
+hmc_ok( 'histórico: a operação mais recente vem primeiro', 'quarentena-orfao', $log ? $log[0]['action'] : null );
+hmc_ok( 'histórico: traz o arquivo', $pv_a, $log ? $log[0]['files'] : null );
+hmc_ok( 'histórico respeita o limite', true, count( HMC_Quarantine::read_log( 3 ) ) <= 3 );
+
 echo "Restauração em massa (desinstalação)\n";
 list( $rest, $falhas ) = HMC_Orphan_Quarantine::restore_all();
 hmc_ok( 'restaura tudo sem falhas', 0, $falhas );

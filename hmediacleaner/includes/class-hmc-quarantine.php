@@ -364,6 +364,48 @@ class HMC_Quarantine {
 	}
 
 	/**
+	 * Últimas operações do log da quarentena, da mais recente para a mais antiga. Só leitura: lê o fim
+	 * do arquivo (sem carregar um log enorme na memória) e ignora linhas incompletas ou malformadas.
+	 *
+	 * @param int $limit Máximo de linhas.
+	 * @return array[] Cada item: date, user, action, id, files.
+	 */
+	public static function read_log( $limit = 200 ) {
+		$f = self::dir() . '/hmc-log.csv';
+		if ( ! HMC_Util::is_plain_file( $f ) || ! HMC_Util::inside( $f, self::dir() ) ) {
+			return array();
+		}
+		$size = (int) filesize( $f );
+		if ( $size < 1 ) {
+			return array();
+		}
+		$chunk = min( $size, 512 * 1024 );
+		$fh    = fopen( $f, 'rb' ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		if ( ! $fh ) {
+			return array();
+		}
+		fseek( $fh, -$chunk, SEEK_END );
+		$data = (string) fread( $fh, $chunk ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		fclose( $fh ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		$lines = preg_split( '/\r?\n/', trim( $data ) );
+		if ( $size > $chunk ) {
+			array_shift( $lines ); // A primeira linha do trecho pode estar cortada.
+		}
+		$out = array();
+		foreach ( array_reverse( $lines ) as $line ) {
+			$c = '' === $line ? array() : str_getcsv( $line, ';' );
+			if ( count( $c ) < 5 ) {
+				continue;
+			}
+			$out[] = array( 'date' => $c[0], 'user' => $c[1], 'action' => $c[2], 'id' => $c[3], 'files' => $c[4] );
+			if ( count( $out ) >= $limit ) {
+				break;
+			}
+		}
+		return $out;
+	}
+
+	/**
 	 * Remove uma pasta e o conteúdo, apenas dentro da pasta de quarentena.
 	 */
 	private static function rmdir_tree( $path ) {

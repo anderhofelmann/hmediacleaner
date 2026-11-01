@@ -32,12 +32,34 @@ class HMC_Orphan_Quarantine {
 	/* ---------------------------------------------------------------- mover */
 
 	/**
-	 * Move um órfão para a quarentena.
+	 * Quais destes caminhos algum item da biblioteca registra como arquivo principal? Uma só consulta
+	 * por lote (uma consulta por arquivo seria muito lenta em bibliotecas grandes).
 	 *
-	 * @param string $rel Caminho relativo a uploads, como está no relatório.
-	 * @return true|string true ou o motivo de não ter movido.
+	 * @param string[] $paths Caminhos relativos a uploads.
+	 * @return array Mapa caminho => true.
 	 */
-	public static function quarantine( $rel ) {
+	public static function registered_among( array $paths ) {
+		global $wpdb;
+		$paths = array_values( array_unique( array_filter( array_map( 'strval', $paths ) ) ) );
+		$out   = array();
+		foreach ( array_chunk( $paths, 200 ) as $chunk ) {
+			$in = "'" . implode( "','", array_map( 'esc_sql', $chunk ) ) . "'";
+			foreach ( (array) $wpdb->get_col( "SELECT meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_wp_attached_file' AND meta_value IN ({$in})" ) as $v ) { // phpcs:ignore WordPress.DB.PreparedSQL
+				$out[ $v ] = true;
+			}
+		}
+		return $out;
+	}
+
+	/**
+	 * Todas as conferências de segurança para mover um órfão, SEM mover nada. É o que a pré-visualização
+	 * usa, e o que a quarentena executa antes de tocar no disco: as regras são as mesmas.
+	 *
+	 * @param string     $rel        Caminho relativo a uploads, como está no relatório.
+	 * @param array|null $registered Resultado de registered_among() para o lote (null = consulta só este).
+	 * @return array|string Dados para mover ou o motivo da recusa.
+	 */
+	public static function inspect( $rel, $registered = null ) {
 		global $wpdb;
 		$rel = HMC_Orphans::path_allowed( $rel );
 		if ( false === $rel ) {
@@ -69,9 +91,27 @@ class HMC_Orphan_Quarantine {
 			return sprintf( __( 'Modificado há menos de %d dias; protegido por precaução.', 'hmediacleaner' ), $protect );
 		}
 		// Algum anexo passou a registrar este arquivo depois da análise?
-		if ( $wpdb->get_var( $wpdb->prepare( "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_wp_attached_file' AND meta_value = %s LIMIT 1", $rel ) ) ) { // phpcs:ignore WordPress.DB.PreparedSQL
+		$registered = null === $registered ? self::registered_among( array( $rel ) ) : $registered;
+		if ( isset( $registered[ $rel ] ) ) {
 			return __( 'Um item da biblioteca de mídia passou a registrar este arquivo; faça uma nova análise.', 'hmediacleaner' );
 		}
+		return array( 'rel' => $rel, 'key' => $key, 'row' => $row, 'abs' => $abs, 'size' => $size );
+	}
+
+	/**
+	 * Move um órfão para a quarentena.
+	 *
+	 * @param string     $rel        Caminho relativo a uploads, como está no relatório.
+	 * @param array|null $registered Resultado de registered_among() para o lote (opcional).
+	 * @return true|string true ou o motivo de não ter movido.
+	 */
+	public static function quarantine( $rel, $registered = null ) {
+		global $wpdb;
+		$i = self::inspect( $rel, $registered );
+		if ( is_string( $i ) ) {
+			return $i;
+		}
+		list( $rel, $key, $row, $abs, $size ) = array( $i['rel'], $i['key'], $i['row'], $i['abs'], $i['size'] );
 		if ( ! HMC_Quarantine::ensure_dir() ) {
 			return __( 'Não foi possível criar a pasta de quarentena (verifique as permissões de uploads).', 'hmediacleaner' );
 		}
@@ -218,7 +258,7 @@ class HMC_Orphan_Quarantine {
 		global $wpdb;
 		$kinds = HMC_Orphans::kinds();
 		$kind  = isset( $kinds[ $kind ] ) ? $kind : '';
-		if ( 'quarantine' === $op ) {
+		if ( 'quarantine' === $op || 'preview' === $op ) {
 			$in    = "'" . implode( "','", array_map( 'esc_sql', HMC_Orphans::movable_kinds() ) ) . "'";
 			$where = "kind IN ({$in})";
 			$table = HMC_DB::orphans_table();
@@ -237,16 +277,23 @@ class HMC_Orphan_Quarantine {
 	}
 
 	/**
-	 * Executa uma operação em um lote de caminhos. Retorna [concluídos, ignorados, mensagens].
+	 * Executa uma operação em um lote de caminhos (ou, em "preview", só confere, sem tocar em nada).
+	 *
+	 * @return array [concluídos, ignorados, mensagens de exemplo, motivos agrupados (texto => quantidade)]
 	 */
 	public static function run_batch( $op, array $paths ) {
-		$ok   = 0;
-		$skip = 0;
-		$msgs = array();
-		$days = HMC_DB::settings()['retention_days'];
+		$ok      = 0;
+		$skip    = 0;
+		$msgs    = array();
+		$reasons = array();
+		$days    = HMC_DB::settings()['retention_days'];
+		$reg     = in_array( $op, array( 'quarantine', 'preview' ), true ) ? self::registered_among( $paths ) : null;
 		foreach ( $paths as $rel ) {
-			if ( 'quarantine' === $op ) {
-				$res = self::quarantine( $rel );
+			if ( 'preview' === $op ) {
+				$i   = self::inspect( $rel, $reg );
+				$res = is_string( $i ) ? $i : true;
+			} elseif ( 'quarantine' === $op ) {
+				$res = self::quarantine( $rel, $reg );
 			} elseif ( 'restore' === $op ) {
 				$res = self::restore( $rel );
 			} else {
@@ -256,12 +303,13 @@ class HMC_Orphan_Quarantine {
 				$ok++;
 			} else {
 				$skip++;
+				$reasons[ $res ] = isset( $reasons[ $res ] ) ? $reasons[ $res ] + 1 : 1;
 				if ( count( $msgs ) < 5 ) {
 					$msgs[] = $rel . ': ' . $res;
 				}
 			}
 		}
-		return array( $ok, $skip, $msgs );
+		return array( $ok, $skip, $msgs, $reasons );
 	}
 
 	/**

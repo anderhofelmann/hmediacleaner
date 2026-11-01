@@ -118,5 +118,20 @@ confere( 'com acessos nunca exclui', false, HMC_Orphans::deletable( $agora - 400
 confere( 'prazo 0: exclui logo, mas só sem acessos', true, HMC_Orphans::deletable( $agora, 0, 0, $agora ) );
 confere( 'prazo 0 com acesso não exclui', false, HMC_Orphans::deletable( $agora, 3, 0, $agora ) );
 
+echo "Risco e ordem do plano\n";
+confere( 'lixo é risco baixo', 'low', HMC_Orphans::risk( 'junk' ) );
+confere( 'miniatura é risco baixo', 'low', HMC_Orphans::risk( 'thumb' ) );
+confere( 'WebP é risco médio', 'medium', HMC_Orphans::risk( 'webp' ) );
+confere( 'solto é risco médio', 'medium', HMC_Orphans::risk( 'loose' ) );
+confere( 'original é risco alto', 'high', HMC_Orphans::risk( 'original' ) );
+$plano = HMC_Orphans::plan_order();
+confere( 'o plano começa pelo mais seguro', 'junk', $plano[0] );
+confere( 'o plano termina pelo original', 'original', end( $plano ) );
+confere( 'o plano cobre todos os tipos movíveis, sem "em uso"', array(), array_values( array_diff( HMC_Orphans::movable_kinds(), $plano ) ) );
+confere( 'o plano não tem tipos repetidos', count( $plano ), count( array_unique( $plano ) ) );
+$ordem_ok = true; $rank = array( 'low' => 0, 'medium' => 1, 'high' => 2 ); $ant = 0;
+foreach ( $plano as $k ) { $r = $rank[ HMC_Orphans::risk( $k ) ]; if ( $r < $ant ) { $ordem_ok = false; } $ant = $r; }
+confere( 'o risco nunca diminui ao longo do plano', true, $ordem_ok );
+
 echo "\n$total verificações, $falhas falha(s).\n";
 exit( $falhas ? 1 : 0 );

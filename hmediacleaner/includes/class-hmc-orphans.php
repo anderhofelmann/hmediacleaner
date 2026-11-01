@@ -145,6 +145,32 @@ class HMC_Orphans {
 	}
 
 	/**
+	 * Risco de mover/excluir cada tipo: baixo (restos que o WordPress gera e não usa), médio (cópias que
+	 * um plugin pode entregar, ou arquivos sem dono) ou alto (originais, que ninguém registra).
+	 *
+	 * @param string $kind Tipo.
+	 * @return string low|medium|high
+	 */
+	public static function risk( $kind ) {
+		if ( self::ORIGINAL === $kind ) {
+			return 'high';
+		}
+		if ( in_array( $kind, array( self::WEBP, self::LOOSE ), true ) ) {
+			return 'medium';
+		}
+		return 'low';
+	}
+
+	/**
+	 * Ordem recomendada para esvaziar os órfãos: do mais seguro ao mais sensível.
+	 *
+	 * @return string[]
+	 */
+	public static function plan_order() {
+		return array( self::JUNK, self::EMPTY_, self::EDIT, self::SCALED, self::THUMB, self::WEBP, self::LOOSE, self::ORIGINAL );
+	}
+
+	/**
 	 * Caminho de órfão que o plugin pode tocar: relativo a uploads, seguro, na raiz ou numa pasta de
 	 * data (2026/10/...), fora da quarentena e que não seja arquivo oculto ou de sistema.
 	 *

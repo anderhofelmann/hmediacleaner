@@ -78,6 +78,9 @@
 				}
 				totals.ok += d.ok;
 				totals.skipped += d.skipped;
+				Object.keys( d.reasons || {} ).forEach( function ( k ) {
+					totals.reasons[ k ] = ( totals.reasons[ k ] || 0 ) + d.reasons[ k ];
+				} );
 				( d.messages || [] ).forEach( function ( m ) {
 					if ( $( '#hmc-bulk-msgs li' ).length < 10 ) {
 						$( '#hmc-bulk-msgs' ).append( $( '<li>' ).text( m ) );
@@ -90,6 +93,12 @@
 					HMC.bulkStatus.replace( '%1$s', fmt( processed ) ).replace( '%2$s', fmt( totals.total ) ).replace( '%3$s', fmt( totals.ok ) ).replace( '%4$s', fmt( totals.skipped ) )
 				);
 				if ( d.done ) {
+					if ( $btn.data( 'op' ) === 'preview' ) {
+						// Pré-visualização: mostra o resultado aqui, sem recarregar (nada foi alterado).
+						showPreview( totals );
+						$( '.hmc-bulk-btn, #hmc-start' ).prop( 'disabled', false );
+						return;
+					}
 					setTimeout( function () { window.location.reload(); }, 1500 );
 					return;
 				}
@@ -106,6 +115,22 @@
 			} );
 	}
 
+	function showPreview( totals ) {
+		var $box = $( '#hmc-preview-result' ).empty().prop( 'hidden', false );
+		$box.append( $( '<p>' ).append( $( '<strong>' ).text(
+			HMC.previewResult.replace( '%1$s', fmt( totals.ok ) ).replace( '%2$s', fmt( totals.skipped ) )
+		) ) );
+		var keys = Object.keys( totals.reasons );
+		if ( keys.length ) {
+			var $ul = $( '<ul>' );
+			keys.sort( function ( a, b ) { return totals.reasons[ b ] - totals.reasons[ a ]; } ).forEach( function ( k ) {
+				$ul.append( $( '<li>' ).text( fmt( totals.reasons[ k ] ) + ' × ' + k ) );
+			} );
+			$box.append( $( '<p>' ).text( HMC.previewWhy ), $ul );
+		}
+		$( '#hmc-bulk-progress' ).prop( 'hidden', true );
+	}
+
 	$( function () {
 		$( '#hmc-start' ).on( 'click', function () {
 			if ( window.confirm( HMC.confirm ) ) {
@@ -116,13 +141,15 @@
 
 		$( '.hmc-bulk-btn' ).on( 'click', function () {
 			var $btn = $( this );
-			if ( ! window.confirm( $btn.data( 'confirm' ) ) ) {
+			var question = $btn.data( 'confirm' );
+			if ( question && ! window.confirm( question ) ) {
 				return;
 			}
 			$( '.hmc-bulk-btn, #hmc-start' ).prop( 'disabled', true );
+			$( '#hmc-preview-result' ).prop( 'hidden', true ).empty();
 			$( '#hmc-bulk-progress' ).prop( 'hidden', false );
 			$( '#hmc-bulk-msgs' ).empty();
-			bulk( $btn, 0, { total: 0, ok: 0, skipped: 0 } );
+			bulk( $btn, 0, { total: 0, ok: 0, skipped: 0, reasons: {} } );
 		} );
 
 		// Confirmação para links de exclusão e para a ação em massa "Excluir definitivamente".

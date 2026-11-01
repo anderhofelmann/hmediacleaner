@@ -5,7 +5,7 @@ Tags: media, cleaner, unused images, duplicates, quarantine, woocommerce
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.5.0
+Stable tag: 0.6.0
 License: GPLv2 or later
 
 Encontra arquivos da biblioteca de mídia sem uso e duplicados, com análise abrangente, e os coloca em quarentena restaurável antes de qualquer exclusão.
@@ -65,6 +65,19 @@ caminhos relativos. Na dúvida, considera o arquivo em uso. Também encontra arq
 * `wp hmediacleaner orphans-quarantined | orphans-restore | orphans-purge` – ver, restaurar e excluir (só elegíveis).
 
 == Changelog ==
+
+= 0.6.0 =
+* Novo: aba "Visão geral" (tela inicial) com o espaço que dá para recuperar, um gráfico de onde ele está e um
+  plano recomendado, do mais seguro ao mais sensível (lixo e vazios, miniaturas, itens sem uso, WebP,
+  arquivos soltos e, por último, os originais grandes)
+* Novo: selos de risco (baixo, médio, alto) em cada tipo de órfão
+* Novo: "Pré-visualizar" — mostra quantos arquivos seriam movidos e por que os outros seriam ignorados, usando
+  exatamente as mesmas conferências da quarentena e sem alterar nada. No painel e no WP-CLI (--dry-run)
+* Novo: aba "Histórico" com as últimas operações registradas (movido, restaurado, excluído)
+* Mais rápido: a quarentena de órfãos confere o registro na biblioteca uma vez por lote, em vez de uma
+  consulta por arquivo (importante em bibliotecas grandes)
+* Visual refeito: cartão de destaque, gráfico de espaço, plano em passos, melhor uso no celular
+* Corrigido: a pré-visualização nunca pode ser tratada como exclusão por engano (operação validada à parte)
 
 = 0.5.0 =
 * Novo: quarentena e exclusão de arquivos órfãos, com o mesmo cuidado dos anexos. Os arquivos são movidos
