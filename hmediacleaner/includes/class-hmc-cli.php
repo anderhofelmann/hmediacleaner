@@ -95,7 +95,7 @@ class HMC_CLI {
 	 * ## OPTIONS
 	 *
 	 * [--kind=<kind>]
-	 * : Lista os arquivos de um tipo: thumb, scaled, edit, webp, junk, empty, loose ou in_use.
+	 * : Lista os arquivos de um tipo: thumb, scaled, edit, webp, junk, empty, original, loose ou in_use.
 	 *
 	 * [--limit=<n>]
 	 * : Quantos arquivos listar, dos maiores para os menores.

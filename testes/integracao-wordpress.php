@@ -35,9 +35,18 @@ $mes  = gmdate( 'Y/m' ) . '/';
 wp_mkdir_p( $base . $mes );
 
 /** Anexo "cru": o arquivo existe e o anexo o registra, sem metadados de miniaturas. */
-function hmc_t_raw( $name, $bytes ) {
+function hmc_t_raw( $name, $bytes, $exact = false ) {
 	global $wpdb;
-	$up = wp_upload_bits( $name, null, $bytes );
+	if ( $exact ) {
+		// O WordPress renomeia envios terminados em "-scaled" (acrescenta "-1"); aqui o nome é gravado
+		// exatamente como em um site que já tinha essas imagens.
+		$u  = wp_upload_dir( null, false );
+		$f  = trailingslashit( $u['path'] ) . $name;
+		file_put_contents( $f, $bytes );
+		$up = array( 'file' => $f );
+	} else {
+		$up = wp_upload_bits( $name, null, $bytes );
+	}
 	if ( ! empty( $up['error'] ) ) {
 		return 0;
 	}
@@ -67,6 +76,7 @@ $cabeca = $bloco;
 $cabeca[10] = chr( ord( $cabeca[10] ) ^ 1 );
 $D     = hmc_t_raw( "$tag-d.png", $cabeca ); // Mesmo tamanho, início diferente.
 $X     = hmc_t_raw( "$tag-x.png", random_bytes( 3000 ) );
+$CAM   = hmc_t_raw( "$tag-camera-scaled.png", random_bytes( 3000 ), true ); // O anexo usa a versão -scaled; o original grande não é registrado.
 
 // Órfãos de verdade, no disco.
 $arq = array(
@@ -74,6 +84,8 @@ $arq = array(
 	"{$mes}$tag-x-scaled.png"          => 'scaled',
 	"{$mes}$tag-x-e1700000000123.png"  => 'editada',
 	"{$mes}$tag-x.png.webp"            => 'webp',
+	"{$mes}$tag-camera.png"            => 'original grande',
+	"{$mes}$tag-camera-300x200.png"   => 'miniatura do original',
 	"{$mes}$tag-solto.jpg"             => 'solto',
 	"{$mes}$tag-solto-usado.jpg"       => 'solto usado',
 	"{$mes}$tag-erro.log"              => 'log',
@@ -120,6 +132,8 @@ hmc_ok( 'versão -scaled sem registro', 'scaled', $kind( "{$mes}$tag-x-scaled.pn
 hmc_ok( 'versão editada', 'edit', $kind( "{$mes}$tag-x-e1700000000123.png" ) );
 hmc_ok( 'cópia WebP de imagem registrada', 'webp', $kind( "{$mes}$tag-x.png.webp" ) );
 hmc_ok( 'arquivo solto', 'loose', $kind( "{$mes}$tag-solto.jpg" ) );
+hmc_ok( 'original grande de imagem -scaled registrada', 'original', $kind( "{$mes}$tag-camera.png" ) );
+hmc_ok( 'miniatura do original (base é a -scaled)', 'thumb', $kind( "{$mes}$tag-camera-300x200.png" ) );
 hmc_ok( 'solto, mas referenciado pelo site, não é candidato', 'in_use', $kind( "{$mes}$tag-solto-usado.jpg" ) );
 hmc_ok( 'log', 'junk', $kind( "{$mes}$tag-erro.log" ) );
 hmc_ok( 'arquivo vazio', 'empty', $kind( "{$mes}$tag-zero.png" ) );
@@ -200,7 +214,7 @@ hmc_ok( 'o arquivo voltou ao lugar', true, file_exists( $base . $rel ) );
 
 /* ====================================================================== limpeza */
 
-foreach ( array( $A, $B, $C, $D, $X, $E, $F, $G, $H ) as $id ) {
+foreach ( array( $A, $B, $C, $D, $X, $CAM, $E, $F, $G, $H ) as $id ) {
 	wp_delete_attachment( $id, true );
 }
 foreach ( array_keys( $arq ) as $rel2 ) {

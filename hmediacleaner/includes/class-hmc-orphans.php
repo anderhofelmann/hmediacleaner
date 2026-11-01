@@ -19,6 +19,7 @@ class HMC_Orphans {
 	const WEBP   = 'webp';   // Cópia .webp/.avif de uma imagem que a biblioteca registra.
 	const JUNK   = 'junk';   // .log, .bak, .orig, .tmp e cópias de segurança de compressão.
 	const EMPTY_ = 'empty';  // Arquivo de zero byte.
+	const ORIGINAL = 'original'; // Original grande de uma imagem que o WordPress reduziu (-scaled); o anexo só registra a reduzida.
 	const LOOSE  = 'loose';  // Arquivo sem nenhum anexo e sem referência no site.
 	const IN_USE = 'in_use'; // Sem anexo, mas o site o referencia: não é candidato.
 
@@ -73,6 +74,15 @@ class HMC_Orphans {
 		$stem   = $name;
 		$kind   = null;
 
+		// O arquivo "base" existe se algum anexo o registra ou registra a versão -scaled dele: quando a
+		// imagem é grande, o WordPress passa a usar a -scaled e, em muitos sites, deixa de anotar o original.
+		$tem_base = function ( $nome ) use ( $known, $prefix ) {
+			if ( $known( $prefix . $nome ) ) {
+				return true;
+			}
+			return (bool) preg_match( '/^(.+)(\.[a-z0-9]+)$/', $nome, $m ) && $known( $prefix . $m[1] . '-scaled' . $m[2] );
+		};
+
 		// Procura o arquivo "base" de que este é derivado, tirando sufixos conhecidos (até 3 níveis).
 		for ( $i = 0; $i < 3; $i++ ) {
 			$changed = false;
@@ -99,13 +109,17 @@ class HMC_Orphans {
 			if ( ! $changed ) {
 				break;
 			}
-			if ( $known( $prefix . $stem ) ) {
+			if ( $tem_base( $stem ) ) {
 				return $kind;
 			}
 		}
 
-		if ( $known( $prefix . $stem ) && $stem !== $name ) {
+		if ( $stem !== $name && $tem_base( $stem ) ) {
 			return $kind;
+		}
+		// Sem sufixo e sem registro, mas a versão -scaled dele é registrada: é o original grande.
+		if ( $stem === $name && preg_match( '/^(.+)(\.[a-z0-9]+)$/', $name, $m ) && $known( $prefix . $m[1] . '-scaled' . $m[2] ) ) {
+			return $in_use( $rel ) ? self::IN_USE : self::ORIGINAL;
 		}
 		return $in_use( $rel ) ? self::IN_USE : self::LOOSE;
 	}
@@ -123,6 +137,7 @@ class HMC_Orphans {
 			self::WEBP   => array( __( 'Cópias WebP/AVIF de imagens da biblioteca', 'hmediacleaner' ), __( 'Geradas por um plugin de otimização. Só apague se nenhum plugin ou regra do servidor as entrega aos visitantes.', 'hmediacleaner' ) ),
 			self::JUNK   => array( __( 'Logs, cópias de segurança e temporários', 'hmediacleaner' ), __( 'Arquivos .log, .bak, .orig, .tmp e cópias de compressão. Costumam ser seguros de apagar.', 'hmediacleaner' ) ),
 			self::EMPTY_ => array( __( 'Arquivos vazios', 'hmediacleaner' ), __( 'Zero byte: uploads que falharam.', 'hmediacleaner' ) ),
+			self::ORIGINAL => array( __( 'Originais grandes (a versão -scaled é a usada)', 'hmediacleaner' ), __( 'Fotos originais, muitas vezes de vários MB, de imagens que o WordPress reduziu. O anexo usa a versão -scaled e não registra o original, então o WordPress não o enxerga e não o apaga. Só mantenha se pretende regenerar miniaturas a partir dele.', 'hmediacleaner' ) ),
 			self::LOOSE  => array( __( 'Arquivos soltos', 'hmediacleaner' ), __( 'Sem anexo na biblioteca e sem referência no site. Confira antes de apagar (podem ter vindo de FTP ou de uma importação).', 'hmediacleaner' ) ),
 			self::IN_USE => array( __( 'Soltos, mas em uso', 'hmediacleaner' ), __( 'Não estão na biblioteca, mas alguma página os referencia. Não são candidatos.', 'hmediacleaner' ) ),
 		);

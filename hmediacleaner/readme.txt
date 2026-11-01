@@ -5,7 +5,7 @@ Tags: media, cleaner, unused images, duplicates, quarantine, woocommerce
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.4.0
+Stable tag: 0.4.1
 License: GPLv2 or later
 
 Encontra arquivos da biblioteca de mídia sem uso e duplicados, com análise abrangente, e os coloca em quarentena restaurável antes de qualquer exclusão.
@@ -62,6 +62,14 @@ caminhos relativos. Na dúvida, considera o arquivo em uso. Também encontra arq
 * `wp hmediacleaner purge` – exclusão definitiva dos itens elegíveis.
 
 == Changelog ==
+
+= 0.4.1 =
+* Arquivos órfãos: novo tipo "Originais grandes". Em muitos sites o WordPress passa a usar a versão
+  -scaled de uma foto grande e o original (às vezes de vários MB) fica no disco sem aparecer nos metadados
+  do anexo. Esses originais, e as miniaturas deles, agora são classificados como tais (antes apareciam
+  como "arquivos soltos"), o que mostra com clareza onde está o espaço
+* Atualizador: reconhece o arquivo da release com ou sem a versão no nome (hmediacleaner.zip ou
+  hmediacleaner-0.4.1.zip); com o nome com versão, a atualização automática nunca era oferecida
 
 = 0.4.0 =
 * Segurança: os caminhos de arquivo vindos do banco (metadados do anexo e dados da quarentena)

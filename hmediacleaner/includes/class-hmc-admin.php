@@ -478,7 +478,7 @@ class HMC_Admin {
 			echo '<div class="notice notice-info inline"><p>' . esc_html__( 'A procura de órfãos está desligada nas configurações.', 'hmediacleaner' ) . '</p></div>';
 		}
 		$free = 0;
-		foreach ( array( HMC_Orphans::THUMB, HMC_Orphans::SCALED, HMC_Orphans::EDIT, HMC_Orphans::JUNK, HMC_Orphans::EMPTY_, HMC_Orphans::LOOSE ) as $k ) {
+		foreach ( array( HMC_Orphans::THUMB, HMC_Orphans::SCALED, HMC_Orphans::EDIT, HMC_Orphans::JUNK, HMC_Orphans::EMPTY_, HMC_Orphans::LOOSE, HMC_Orphans::ORIGINAL ) as $k ) {
 			$free += isset( $counts[ $k ] ) ? (int) $counts[ $k ]['bytes'] : 0;
 		}
 		/* translators: %s: tamanho */

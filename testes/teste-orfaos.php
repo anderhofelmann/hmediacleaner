@@ -24,7 +24,7 @@ function confere( $nome, $esperado, $obtido ) {
 }
 
 // Caminhos que algum anexo registra (em minúsculas, como o plugin compara).
-$registrados = array( '2026/10/foto.jpg', '2026/10/foto-300x200.jpg', '2026/10/logo.png', 'logo.png', '2026/09/capa.jpeg' );
+$registrados = array( '2026/10/foto.jpg', '2026/10/foto-300x200.jpg', '2026/10/logo.png', 'logo.png', '2026/09/capa.jpeg', '2026/10/camera-scaled.jpg', '2026/10/iphone-scaled.jpeg' );
 $conhecido   = function ( $rel ) use ( $registrados ) {
 	return in_array( strtolower( $rel ), $registrados, true );
 };
@@ -47,6 +47,14 @@ confere( 'WebP por acréscimo (foto.jpg.webp)', 'webp', $tipo( '2026/10/foto.jpg
 confere( 'WebP por troca de extensão (logo.webp)', 'webp', $tipo( '2026/10/logo.webp' ) );
 confere( 'maiúsculas não atrapalham', 'thumb', $tipo( '2026/10/FOTO-150x150.JPG' ) );
 confere( 'arquivo na raiz de uploads', 'thumb', $tipo( 'logo-300x300.png' ) );
+
+echo "Originais de imagens reduzidas (-scaled)\n";
+confere( 'original grande de uma imagem -scaled registrada', 'original', $tipo( '2026/10/camera.jpg' ) );
+confere( 'original com extensão .jpeg', 'original', $tipo( '2026/10/iphone.jpeg' ) );
+confere( 'original que o site referencia não é candidato', 'in_use', HMC_Orphans::kind_for( '2026/10/camera.jpg', 5000, $conhecido, function ( $r ) { return true; } ) );
+confere( 'miniatura do original (a base é a -scaled registrada)', 'thumb', $tipo( '2026/10/camera-300x225.jpg' ) );
+confere( 'miniatura de original, em maiúsculas', 'thumb', $tipo( '2026/10/Camera-150x150.JPG' ) );
+confere( 'original sem a versão -scaled registrada continua solto', 'loose', $tipo( '2026/10/sem-par.jpg' ) );
 
 echo "Sem arquivo base\n";
 confere( 'miniatura cujo original não existe é solta', 'loose', $tipo( '2026/10/outra-150x150.jpg' ) );

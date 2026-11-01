@@ -25,6 +25,8 @@ Além dos anexos sem uso, o plugin lista os **arquivos que estão em `uploads` m
 
 É **somente relatório**: nada é movido nem apagado. A procura vale para as pastas de data (`2026/10/`) e para a raiz de `uploads`; pastas de plugins ficam de fora. Arquivos que o site referencia são marcados como "em uso" e não são candidatos. Aba **Órfãos** no painel e `wp hmediacleaner orphans` na linha de comando.
 
+Nos sites em que o WordPress reduz as fotos grandes (versão `-scaled`), o **original** costuma ficar no disco sem constar nos metadados do anexo: o WordPress não o enxerga e não o apaga. O plugin os mostra como "Originais grandes", junto com as miniaturas deles, porque é aí que costuma estar o maior volume de espaço.
+
 ## Quarentena
 
 Cada arquivo movesido para a quarentena pode ser restaurado com um clique. A desinstalação do plugin também devolve **tudo** o que estiver em quarentena — a biblioteca de mídia não perde nada.
