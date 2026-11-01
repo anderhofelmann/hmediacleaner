@@ -90,7 +90,7 @@ class HMC_CLI {
 	}
 
 	/**
-	 * Resume (ou lista) os arquivos órfãos encontrados na última análise. Somente leitura.
+	 * Resume (ou lista) os arquivos órfãos encontrados na última análise. Somente leitura (para mover, veja orphans-quarantine).
 	 *
 	 * ## OPTIONS
 	 *
@@ -129,7 +129,7 @@ class HMC_CLI {
 				return;
 			}
 			WP_CLI\Utils\format_items( $assoc['format'], $rows, array( 'Tipo', 'O que é', 'Arquivos', 'Espaço' ) );
-			WP_CLI::log( 'Somente relatório: nada é movido nem apagado. Detalhes de um tipo: wp hmediacleaner orphans --kind=<tipo>' );
+			WP_CLI::log( 'Este comando só lista. Detalhes de um tipo: wp hmediacleaner orphans --kind=<tipo>. Para mover à quarentena: wp hmediacleaner orphans-quarantine --kind=<tipo>' );
 			return;
 		}
 		$kind = sanitize_key( $assoc['kind'] );
@@ -222,6 +222,119 @@ class HMC_CLI {
 	 */
 	public function purge( $args, $assoc ) {
 		$this->bulk( 'delete', 'quarantine', $assoc, 'EXCLUIR DEFINITIVAMENTE %d arquivos? Não pode ser desfeito.' );
+	}
+
+	/**
+	 * Move arquivos órfãos de um tipo para a quarentena (nada é apagado; dá para restaurar).
+	 *
+	 * ## OPTIONS
+	 *
+	 * --kind=<kind>
+	 * : thumb, scaled, edit, webp, junk, empty, original ou loose. ("in_use" nunca é movido.)
+	 *
+	 * [--yes]
+	 * : Não pedir confirmação.
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp hmediacleaner orphans-quarantine --kind=junk
+	 *
+	 * @subcommand orphans-quarantine
+	 */
+	public function orphans_quarantine( $args, $assoc ) {
+		$fresh = HMC_DB::scan_is_fresh();
+		if ( true !== $fresh ) {
+			WP_CLI::error( $fresh );
+		}
+		$kind = isset( $assoc['kind'] ) ? sanitize_key( $assoc['kind'] ) : '';
+		if ( ! in_array( $kind, HMC_Orphans::movable_kinds(), true ) ) {
+			WP_CLI::error( 'Informe --kind com um destes tipos: ' . implode( ', ', HMC_Orphans::movable_kinds() ) );
+		}
+		$this->orphan_bulk( 'quarantine', $kind, $assoc, 'Mover %d arquivos órfãos para a quarentena?' );
+	}
+
+	/**
+	 * Restaura arquivos órfãos da quarentena ao lugar de origem.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--kind=<kind>]
+	 * : Só deste tipo (padrão: todos).
+	 *
+	 * [--yes]
+	 * : Não pedir confirmação.
+	 *
+	 * @subcommand orphans-restore
+	 */
+	public function orphans_restore( $args, $assoc ) {
+		$this->orphan_bulk( 'restore', isset( $assoc['kind'] ) ? sanitize_key( $assoc['kind'] ) : '', $assoc, 'Restaurar %d arquivos órfãos?' );
+	}
+
+	/**
+	 * Exclui definitivamente os órfãos em quarentena há mais tempo que o configurado e sem acessos.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--kind=<kind>]
+	 * : Só deste tipo (padrão: todos).
+	 *
+	 * [--yes]
+	 * : Não pedir confirmação.
+	 *
+	 * @subcommand orphans-purge
+	 */
+	public function orphans_purge( $args, $assoc ) {
+		$this->orphan_bulk( 'delete', isset( $assoc['kind'] ) ? sanitize_key( $assoc['kind'] ) : '', $assoc, 'EXCLUIR DEFINITIVAMENTE %d arquivos órfãos? Não pode ser desfeito.' );
+	}
+
+	/**
+	 * Mostra o que está em quarentena (órfãos).
+	 *
+	 * @subcommand orphans-quarantined
+	 */
+	public function orphans_quarantined() {
+		$sum  = HMC_Orphan_Quarantine::summary();
+		$rows = array();
+		foreach ( $sum as $k => $r ) {
+			$rows[] = array( 'Tipo' => $k, 'Arquivos' => $r['count'], 'Espaço' => size_format( $r['bytes'], 1 ), 'Com acessos' => $r['hits'], 'Prontos para excluir' => $r['deletable'] );
+		}
+		if ( ! $rows ) {
+			WP_CLI::success( 'Nenhum órfão em quarentena.' );
+			return;
+		}
+		WP_CLI\Utils\format_items( 'table', $rows, array( 'Tipo', 'Arquivos', 'Espaço', 'Com acessos', 'Prontos para excluir' ) );
+	}
+
+	private function orphan_bulk( $op, $kind, $assoc, $question ) {
+		global $wpdb;
+		list( $table, $where ) = HMC_Orphan_Quarantine::selection( $op, $kind );
+		$total                 = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table} WHERE {$where}" ); // phpcs:ignore WordPress.DB.PreparedSQL
+		if ( ! $total ) {
+			WP_CLI::success( 'Nada a fazer.' );
+			return;
+		}
+		WP_CLI::confirm( sprintf( $question, $total ), $assoc );
+		$progress = WP_CLI\Utils\make_progress_bar( 'Processando', $total );
+		$cursor   = '';
+		$ok       = 0;
+		$skip     = 0;
+		while ( true ) {
+			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT path_key, path FROM {$table} WHERE {$where} AND path_key > %s ORDER BY path_key LIMIT 100", $cursor ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+			if ( ! $rows ) {
+				break;
+			}
+			$cursor = end( $rows )->path_key;
+			list( $o, $sk, $msgs ) = HMC_Orphan_Quarantine::run_batch( $op, wp_list_pluck( $rows, 'path' ) );
+			$ok   += $o;
+			$skip += $sk;
+			foreach ( $msgs as $m ) {
+				WP_CLI::debug( $m, 'hmediacleaner' );
+			}
+			$progress->tick( count( $rows ) );
+		}
+		$progress->finish();
+		HMC_Orphan_Quarantine::refresh_summary();
+		WP_CLI::success( sprintf( '%d concluído(s), %d ignorado(s).', $ok, $skip ) );
 	}
 
 	private function bulk( $op, $view, $assoc, $question ) {

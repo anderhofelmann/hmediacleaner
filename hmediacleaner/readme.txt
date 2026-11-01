@@ -5,7 +5,7 @@ Tags: media, cleaner, unused images, duplicates, quarantine, woocommerce
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.4.1
+Stable tag: 0.5.0
 License: GPLv2 or later
 
 Encontra arquivos da biblioteca de mídia sem uso e duplicados, com análise abrangente, e os coloca em quarentena restaurável antes de qualquer exclusão.
@@ -22,7 +22,7 @@ considerá-lo sem uso:
 * configurações do site, do tema, widgets e plugins;
 * dados de usuários;
 * arquivos do tema, do tema pai e dos mu-plugins (imagens no código e no CSS);
-* arquivos órfãos no disco, que nenhum anexo registra (relatório, sem apagar nada);
+* arquivos órfãos no disco, que nenhum anexo registra (com quarentena restaurável e exclusão com prazo);
 * o HTML final das principais páginas (cabeçalho, rodapé e o que os plugins inserem).
 
 Reconhece IDs de anexo, URLs completas, URLs de miniaturas (-300x300), versões -scaled, WebP e
@@ -60,8 +60,24 @@ caminhos relativos. Na dúvida, considera o arquivo em uso. Também encontra arq
 * `wp hmediacleaner quarantine [--view=<visão>]` – coloca os candidatos em quarentena.
 * `wp hmediacleaner restore <id>... | --all` – restaura da quarentena.
 * `wp hmediacleaner purge` – exclusão definitiva dos itens elegíveis.
+* `wp hmediacleaner orphans [--kind=<tipo>]` – resumo/lista dos arquivos órfãos.
+* `wp hmediacleaner orphans-quarantine --kind=<tipo>` – move órfãos para a quarentena.
+* `wp hmediacleaner orphans-quarantined | orphans-restore | orphans-purge` – ver, restaurar e excluir (só elegíveis).
 
 == Changelog ==
+
+= 0.5.0 =
+* Novo: quarentena e exclusão de arquivos órfãos, com o mesmo cuidado dos anexos. Os arquivos são movidos
+  (nunca apagados direto) para uma pasta protegida, por tipo ou em lote, e restaurados com um clique ao
+  lugar exato. Itens "em uso" nunca são movidos
+* Segurança: na hora de mover, cada órfão é conferido de novo (existe, é arquivo comum dentro de uploads,
+  mesmo tamanho e data da análise; recente fica protegido; não pode ter passado a ser registrado
+  pela biblioteca; nunca segue link simbólico); a restauração nunca sobrescreve um arquivo existente
+* Acessos (pedidos 404 ao endereço original) enquanto em quarentena são contados, com limite de frequência;
+  quem recebeu acesso nunca é excluído
+* Exclusão definitiva só depois do prazo da quarentena (padrão 30 dias) e sem acessos
+* WP-CLI: orphans-quarantine, orphans-quarantined, orphans-restore, orphans-purge
+* Desinstalar devolve os órfãos em quarentena aos lugares de origem
 
 = 0.4.1 =
 * Arquivos órfãos: novo tipo "Originais grandes". Em muitos sites o WordPress passa a usar a versão

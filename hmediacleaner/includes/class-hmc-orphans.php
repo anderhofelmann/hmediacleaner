@@ -4,7 +4,8 @@
  * (miniaturas de tamanhos antigos, versões -scaled e editadas, cópias .orig e .webp, logs, arquivos
  * enviados por FTP...). Costumam ocupar mais espaço do que os anexos sem uso.
  *
- * Esta classe só CLASSIFICA e lista. Nada é movido nem apagado: é um relatório.
+ * Esta classe só CLASSIFICA e decide o que pode ou não ser tocado. Quem move, restaura e exclui é a
+ * HMC_Orphan_Quarantine.
  *
  * A classificação não depende do WordPress, para ser testada em linha de comando.
  */
@@ -122,6 +123,64 @@ class HMC_Orphans {
 			return $in_use( $rel ) ? self::IN_USE : self::ORIGINAL;
 		}
 		return $in_use( $rel ) ? self::IN_USE : self::LOOSE;
+	}
+
+	/**
+	 * Tipos que podem ir para a quarentena. "Em uso" nunca é candidato.
+	 *
+	 * @return string[]
+	 */
+	public static function movable_kinds() {
+		return array( self::THUMB, self::SCALED, self::EDIT, self::WEBP, self::JUNK, self::EMPTY_, self::ORIGINAL, self::LOOSE );
+	}
+
+	/**
+	 * Tipos em que um engano custa mais caro e que pedem confirmação reforçada: cópias que um plugin
+	 * pode entregar aos visitantes, originais (o WordPress não os registra) e arquivos sem dono.
+	 *
+	 * @return string[]
+	 */
+	public static function sensitive_kinds() {
+		return array( self::WEBP, self::ORIGINAL, self::LOOSE );
+	}
+
+	/**
+	 * Caminho de órfão que o plugin pode tocar: relativo a uploads, seguro, na raiz ou numa pasta de
+	 * data (2026/10/...), fora da quarentena e que não seja arquivo oculto ou de sistema.
+	 *
+	 * @param mixed $rel Caminho vindo do banco ou do painel.
+	 * @return string|false Caminho normalizado ou false.
+	 */
+	public static function path_allowed( $rel ) {
+		$rel = HMC_Util::safe_rel( $rel );
+		if ( false === $rel ) {
+			return false;
+		}
+		$parts = explode( '/', $rel );
+		$name  = strtolower( end( $parts ) );
+		if ( 'hmc-quarantine' === strtolower( $parts[0] ) || in_array( $name, self::IGNORED, true ) || '.' === $name[0] ) {
+			return false;
+		}
+		// Um arquivo na raiz de uploads, ou dentro de uma pasta de data.
+		if ( count( $parts ) > 1 && ! self::top_dir_in_scope( $parts[0] ) ) {
+			return false;
+		}
+		return $rel;
+	}
+
+	/**
+	 * Arquivo modificado há menos de $days dias: pode estar acabando de ser enviado (por FTP, por
+	 * exemplo) e ainda não ter sido usado em lugar nenhum.
+	 */
+	public static function is_recent( $mtime, $days, $now ) {
+		return (int) $days > 0 && ( (int) $now - (int) $mtime ) < (int) $days * 86400;
+	}
+
+	/**
+	 * Exclusão definitiva só depois do prazo e nunca para arquivo que teve acessos na quarentena.
+	 */
+	public static function deletable( $quarantined_at, $hits, $min_days, $now ) {
+		return 0 === (int) $hits && ( (int) $now - (int) $quarantined_at ) >= (int) $min_days * 86400;
 	}
 
 	/**

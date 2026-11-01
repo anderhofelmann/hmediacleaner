@@ -23,13 +23,25 @@ Só o que não tem referência nenhuma entra na lista. E nada é apagado sem pas
 
 Além dos anexos sem uso, o plugin lista os **arquivos que estão em `uploads` mas que nenhum anexo registra**: miniaturas de tamanhos antigos, versões `-scaled` e editadas, cópias `.webp`, logs, arquivos enviados por FTP. Em lojas antigas costumam ocupar mais espaço que os anexos sem uso.
 
-É **somente relatório**: nada é movido nem apagado. A procura vale para as pastas de data (`2026/10/`) e para a raiz de `uploads`; pastas de plugins ficam de fora. Arquivos que o site referencia são marcados como "em uso" e não são candidatos. Aba **Órfãos** no painel e `wp hmediacleaner orphans` na linha de comando.
+A procura vale para as pastas de data (`2026/10/`) e para a raiz de `uploads`; pastas de plugins ficam de fora. Arquivos que o site referencia são marcados como "em uso" e **nunca** são movidos. Aba **Órfãos** no painel e `wp hmediacleaner orphans` na linha de comando.
 
 Nos sites em que o WordPress reduz as fotos grandes (versão `-scaled`), o **original** costuma ficar no disco sem constar nos metadados do anexo: o WordPress não o enxerga e não o apaga. O plugin os mostra como "Originais grandes", junto com as miniaturas deles, porque é aí que costuma estar o maior volume de espaço.
 
+### Quarentena e exclusão de órfãos
+
+Os órfãos seguem o mesmo caminho dos anexos: **quarentena → exclusão**, nunca apagar direto.
+
+- **Mover:** os arquivos vão para `uploads/hmc-quarantine/orphans/`, com o mesmo caminho de origem. Por tipo, em lote, com confirmação (reforçada para originais grandes, cópias WebP e arquivos soltos).
+- **Conferido de novo na hora de mover:** a análise precisa ser recente; o arquivo precisa existir, ser um arquivo comum (nunca link simbólico) dentro de `uploads`, e ter o mesmo tamanho e a mesma data da análise. Arquivos modificados há poucos dias (padrão: 7) são protegidos, e arquivos que a biblioteca passou a registrar são ignorados.
+- **Vigia:** pedidos 404 ao endereço original do arquivo em quarentena são contados (com limite de frequência). Quem recebeu acesso **nunca** é excluído, e o painel alerta.
+- **Restaurar:** com um clique, por tipo ou tudo. Nunca sobrescreve um arquivo que já exista no destino.
+- **Excluir definitivamente:** só depois do prazo da quarentena (padrão: 30 dias) e só se não houve acessos, sempre com confirmação.
+- **Linha de comando:** `wp hmediacleaner orphans-quarantine --kind=<tipo>`, `orphans-quarantined`, `orphans-restore`, `orphans-purge`.
+- Tudo é registrado no log da quarentena, e a desinstalação do plugin devolve os órfãos aos lugares de origem.
+
 ## Quarentena
 
-Cada arquivo movesido para a quarentena pode ser restaurado com um clique. A desinstalação do plugin também devolve **tudo** o que estiver em quarentena — a biblioteca de mídia não perde nada.
+Cada arquivo movido para a quarentena pode ser restaurado com um clique. A desinstalação do plugin também devolve **tudo** o que estiver em quarentena — a biblioteca de mídia não perde nada.
 
 ## Instalação
 
@@ -53,6 +65,13 @@ wp hmediacleaner quarantine list
 
 # Restaurar um arquivo
 wp hmediacleaner quarantine restore <id>
+
+# Arquivos órfãos: listar, mover, ver, restaurar, excluir (só os elegíveis)
+wp hmediacleaner orphans
+wp hmediacleaner orphans-quarantine --kind=junk
+wp hmediacleaner orphans-quarantined
+wp hmediacleaner orphans-restore [--kind=<tipo>]
+wp hmediacleaner orphans-purge [--kind=<tipo>]
 ```
 
 ## Segurança

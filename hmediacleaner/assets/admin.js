@@ -52,10 +52,11 @@
 
 	function bulk( $btn, cursor, totals ) {
 		var data = {
-			action: 'hmc_bulk',
+			action: $btn.data( 'action' ) || 'hmc_bulk',
 			_ajax_nonce: HMC.bulkNonce,
 			op: $btn.data( 'op' ),
 			view: $btn.data( 'view' ),
+			kind: $btn.data( 'kind' ),
 			s: $btn.data( 's' ),
 			cursor: cursor
 		};

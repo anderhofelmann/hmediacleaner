@@ -15,6 +15,7 @@ class HMC_Admin {
 		add_action( 'admin_enqueue_scripts', array( $this, 'assets' ) );
 		add_action( 'wp_ajax_hmc_scan', array( $this, 'ajax_scan' ) );
 		add_action( 'wp_ajax_hmc_bulk', array( $this, 'ajax_bulk' ) );
+		add_action( 'wp_ajax_hmc_orphan_bulk', array( $this, 'ajax_orphan_bulk' ) );
 		add_action( 'admin_post_hmc_export', array( $this, 'export' ) );
 		add_action( 'admin_post_hmc_orphans_export', array( $this, 'export_orphans' ) );
 		add_action( 'admin_post_hmc_settings', array( $this, 'save_settings' ) );
@@ -223,6 +224,67 @@ class HMC_Admin {
 		delete_transient( 'hmc_bulk_lock' );
 		if ( $done ) {
 			self::refresh_summary_quarantine();
+		}
+		wp_send_json_success(
+			array(
+				'done'     => $done,
+				'cursor'   => $cursor,
+				'total'    => $total,
+				'ok'       => $ok,
+				'skipped'  => $skip,
+				'messages' => $msgs,
+			)
+		);
+	}
+
+	/**
+	 * Operação em lote sobre arquivos órfãos (quarentena, restauração, exclusão), em partes de ~8 s.
+	 * O cursor é a chave do caminho (hexadecimal), para retomar de onde parou.
+	 */
+	public function ajax_orphan_bulk() {
+		global $wpdb;
+		check_ajax_referer( 'hmc_bulk' );
+		if ( ! current_user_can( self::CAP ) ) {
+			wp_send_json_error( array( 'message' => __( 'Sem permissão.', 'hmediacleaner' ) ), 403 );
+		}
+		$op     = isset( $_POST['op'] ) ? sanitize_key( $_POST['op'] ) : '';
+		$kind   = isset( $_POST['kind'] ) ? sanitize_key( $_POST['kind'] ) : '';
+		$cursor = isset( $_POST['cursor'] ) ? preg_replace( '/[^a-f0-9]/', '', strtolower( (string) wp_unslash( $_POST['cursor'] ) ) ) : '';
+		$cursor = '0' === $cursor ? '' : $cursor;
+		$allowed = self::op_allowed( $op );
+		if ( true !== $allowed ) {
+			wp_send_json_error( array( 'message' => $allowed ) );
+		}
+		if ( get_transient( 'hmc_bulk_lock' ) ) {
+			wp_send_json_success( array( 'busy' => true, 'cursor' => $cursor ) );
+		}
+		set_transient( 'hmc_bulk_lock', 1, 120 );
+		if ( function_exists( 'set_time_limit' ) ) {
+			@set_time_limit( 60 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+		}
+		list( $table, $where ) = HMC_Orphan_Quarantine::selection( $op, $kind );
+		$total = '' === $cursor ? (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table} WHERE {$where}" ) : null; // phpcs:ignore WordPress.DB.PreparedSQL
+		$ok    = 0;
+		$skip  = 0;
+		$msgs  = array();
+		$done  = false;
+		$t0    = microtime( true );
+		while ( microtime( true ) - $t0 < 8 ) {
+			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT path_key, path FROM {$table} WHERE {$where} AND path_key > %s ORDER BY path_key LIMIT 100", $cursor ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+			if ( ! $rows ) {
+				$done = true;
+				break;
+			}
+			$paths  = wp_list_pluck( $rows, 'path' );
+			$cursor = end( $rows )->path_key;
+			list( $o, $sk, $m ) = HMC_Orphan_Quarantine::run_batch( $op, $paths );
+			$ok   += $o;
+			$skip += $sk;
+			$msgs  = array_slice( array_merge( $msgs, $m ), 0, 5 );
+		}
+		delete_transient( 'hmc_bulk_lock' );
+		if ( $done ) {
+			HMC_Orphan_Quarantine::refresh_summary();
 		}
 		wp_send_json_success(
 			array(
@@ -461,14 +523,15 @@ class HMC_Admin {
 	}
 
 	/**
-	 * Arquivos órfãos: somente relatório. Nada aqui move ou apaga arquivos.
+	 * Arquivos órfãos: relatório, quarentena restaurável e exclusão definitiva (só depois do prazo e sem acessos).
 	 */
 	private function orphans_tab( $running ) {
 		global $wpdb;
 		$sum   = get_option( 'hmc_orphan_summary' );
 		$kinds = HMC_Orphans::kinds();
 		$base  = admin_url( 'upload.php?page=hmediacleaner&tab=orphans' );
-		echo '<p class="hmc-lead">' . esc_html__( 'Arquivos que estão na pasta de uploads, mas que nenhum item da biblioteca de mídia registra: miniaturas de tamanhos antigos, versões editadas, cópias de compressão, logs e arquivos enviados por FTP. Costumam ocupar mais espaço do que os itens sem uso. Esta aba é só um relatório: nada é movido nem apagado.', 'hmediacleaner' ) . '</p>';
+		echo '<p class="hmc-lead">' . esc_html__( 'Arquivos que estão na pasta de uploads, mas que nenhum item da biblioteca de mídia registra: miniaturas de tamanhos antigos, versões editadas, cópias de compressão, logs e arquivos enviados por FTP. Costumam ocupar mais espaço do que os itens sem uso. Nada é apagado direto: primeiro eles vão para uma quarentena protegida, de onde podem voltar com um clique.', 'hmediacleaner' ) . '</p>';
+		$this->orphan_quarantine_panel( $base, $kinds );
 		if ( ! $sum || $running ) {
 			echo '<p>' . esc_html( $running ? __( 'Aguarde o fim da análise.', 'hmediacleaner' ) : __( 'Faça uma análise (aba Relatório) para listar os arquivos órfãos.', 'hmediacleaner' ) ) . '</p>';
 			return;
@@ -484,22 +547,31 @@ class HMC_Admin {
 		/* translators: %s: tamanho */
 		echo '<p class="hmc-free">' . esc_html( sprintf( __( 'Espaço potencialmente recuperável (sem contar as cópias WebP): %s', 'hmediacleaner' ), size_format( $free, 1 ) ) ) . '</p>';
 
-		echo '<table class="widefat striped hmc-about-table"><thead><tr><th>' . esc_html__( 'Tipo', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Arquivos', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Espaço', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'O que é', 'hmediacleaner' ) . '</th></tr></thead><tbody>';
+		echo '<table class="widefat striped hmc-about-table"><thead><tr><th>' . esc_html__( 'Tipo', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Arquivos', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Espaço', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'O que é', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Ação', 'hmediacleaner' ) . '</th></tr></thead><tbody>';
+		$fresh = HMC_DB::scan_is_fresh();
 		foreach ( $kinds as $k => $def ) {
 			$n = isset( $counts[ $k ] ) ? (int) $counts[ $k ]['count'] : 0;
 			if ( ! $n ) {
 				continue;
 			}
+			$action = '';
+			if ( in_array( $k, HMC_Orphans::movable_kinds(), true ) ) {
+				$action = true === $fresh ? $this->orphan_button( 'quarantine', $k, __( 'Mover para a quarentena', 'hmediacleaner' ), $this->quarantine_confirm( $k, $n, (int) $counts[ $k ]['bytes'], $def[0] ) ) : '<span class="hmc-muted">' . esc_html__( 'Faça uma nova análise', 'hmediacleaner' ) . '</span>';
+			}
 			printf(
-				'<tr><td><a href="%s"><strong>%s</strong></a></td><td>%s</td><td>%s</td><td>%s</td></tr>',
+				'<tr><td><a href="%s"><strong>%s</strong></a></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>',
 				esc_url( add_query_arg( 'kind', $k, $base ) ),
 				esc_html( $def[0] ),
 				esc_html( number_format_i18n( $n ) ),
 				esc_html( size_format( (int) $counts[ $k ]['bytes'], 1 ) ),
-				esc_html( $def[1] )
+				esc_html( $def[1] ),
+				$action // Já escapado em orphan_button().
 			);
 		}
 		echo '</tbody></table>';
+		if ( true !== $fresh ) {
+			echo '<div class="notice notice-warning inline"><p>' . esc_html( $fresh ) . '</p></div>';
+		}
 
 		// Lista dos maiores arquivos (do tipo escolhido, se houver).
 		$kind  = isset( $_GET['kind'] ) ? sanitize_key( $_GET['kind'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
@@ -531,6 +603,104 @@ class HMC_Admin {
 			);
 		}
 		echo '</tbody></table>';
+	}
+
+	/**
+	 * Botão de operação em lote sobre órfãos (tratado por admin.js).
+	 */
+	private function orphan_button( $op, $kind, $label, $confirm, $class = '' ) {
+		return sprintf(
+			'<button type="button" class="button hmc-bulk-btn %s" data-action="hmc_orphan_bulk" data-op="%s" data-kind="%s" data-confirm="%s">%s</button>',
+			esc_attr( $class ),
+			esc_attr( $op ),
+			esc_attr( $kind ),
+			esc_attr( $confirm ),
+			esc_html( $label )
+		);
+	}
+
+	/**
+	 * Texto de confirmação para mover um tipo de órfão para a quarentena.
+	 */
+	private function quarantine_confirm( $kind, $count, $bytes, $label ) {
+		/* translators: 1: quantidade, 2: tamanho, 3: tipo */
+		$msg = sprintf( __( 'Mover %1$s arquivos (%2$s) do tipo "%3$s" para a quarentena? Nada é apagado e tudo pode ser restaurado. Arquivos que mudaram desde a análise, modificados há poucos dias ou que passaram a ser registrados na biblioteca são ignorados.', 'hmediacleaner' ), number_format_i18n( $count ), size_format( $bytes, 1 ), $label );
+		$note = array(
+			HMC_Orphans::ORIGINAL => __( 'ATENÇÃO: são os originais das fotos. O WordPress não os registra, então nada avisa se alguma página os usa direto. Eles ficam em quarentena e o plugin conta os acessos; só exclua depois de acompanhar.', 'hmediacleaner' ),
+			HMC_Orphans::WEBP     => __( 'ATENÇÃO: se um plugin ou regra do servidor entrega estas cópias aos visitantes, elas farão falta.', 'hmediacleaner' ),
+			HMC_Orphans::LOOSE    => __( 'ATENÇÃO: não se sabe de onde vieram (FTP, importação). Confira a lista antes.', 'hmediacleaner' ),
+		);
+		return isset( $note[ $kind ] ) ? $msg . "\n\n" . $note[ $kind ] : $msg;
+	}
+
+	/**
+	 * Quadro dos órfãos em quarentena: totais, acessos, restauração e exclusão definitiva.
+	 */
+	private function orphan_quarantine_panel( $base, array $kinds ) {
+		global $wpdb;
+		$sum = HMC_Orphan_Quarantine::summary();
+		echo '<div id="hmc-bulk-progress" class="hmc-progress" hidden><div class="hmc-bar"><span style="width:0%"></span></div><p id="hmc-bulk-status" class="hmc-muted"></p><ul id="hmc-bulk-msgs" class="hmc-muted"></ul></div>';
+		if ( ! $sum ) {
+			return;
+		}
+		$count = 0;
+		$bytes = 0;
+		$hits  = 0;
+		$del   = 0;
+		foreach ( $sum as $r ) {
+			$count += $r['count'];
+			$bytes += $r['bytes'];
+			$hits  += $r['hits'];
+			$del   += $r['deletable'];
+		}
+		$days = HMC_DB::settings()['retention_days'];
+		echo '<h2>' . esc_html__( 'Órfãos em quarentena', 'hmediacleaner' ) . '</h2>';
+		/* translators: 1: quantidade, 2: tamanho */
+		echo '<p class="hmc-free">' . esc_html( sprintf( __( '%1$s arquivos em quarentena, ocupando %2$s.', 'hmediacleaner' ), number_format_i18n( $count ), size_format( $bytes, 1 ) ) ) . '</p>';
+		if ( $hits ) {
+			/* translators: %s: quantidade */
+			echo '<div class="notice notice-error inline hmc-alert"><p><strong>' . esc_html( sprintf( _n( '%s arquivo em quarentena recebeu pedidos de visitantes ou de páginas do site.', '%s arquivos em quarentena receberam pedidos de visitantes ou de páginas do site.', $hits, 'hmediacleaner' ), number_format_i18n( $hits ) ) ) . '</strong> ' . esc_html__( 'Isso indica que fazem falta: restaure-os. Eles não serão excluídos.', 'hmediacleaner' ) . '</p></div>';
+		}
+		echo '<table class="widefat striped hmc-about-table"><thead><tr><th>' . esc_html__( 'Tipo', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Arquivos', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Espaço', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Com acessos', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Prontos para excluir', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Ação', 'hmediacleaner' ) . '</th></tr></thead><tbody>';
+		foreach ( $sum as $k => $r ) {
+			$label   = isset( $kinds[ $k ] ) ? $kinds[ $k ][0] : $k;
+			$actions = $this->orphan_button( 'restore', $k, __( 'Restaurar', 'hmediacleaner' ), sprintf( /* translators: 1: quantidade, 2: tipo */ __( 'Restaurar %1$s arquivos do tipo "%2$s" ao lugar de origem?', 'hmediacleaner' ), number_format_i18n( $r['count'] ), $label ) );
+			if ( $r['deletable'] ) {
+				$actions .= ' ' . $this->orphan_button( 'delete', $k, __( 'Excluir definitivamente', 'hmediacleaner' ), sprintf( /* translators: 1: quantidade, 2: tipo */ __( 'EXCLUIR DEFINITIVAMENTE %1$s arquivos do tipo "%2$s"? Eles ficaram em quarentena pelo prazo, sem acessos. Esta ação NÃO pode ser desfeita.', 'hmediacleaner' ), number_format_i18n( $r['deletable'] ), $label ), 'hmc-danger' );
+			}
+			printf(
+				'<tr><td><strong>%s</strong></td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>',
+				esc_html( $label ),
+				esc_html( number_format_i18n( $r['count'] ) ),
+				esc_html( size_format( $r['bytes'], 1 ) ),
+				esc_html( number_format_i18n( $r['hits'] ) ),
+				esc_html( number_format_i18n( $r['deletable'] ) ),
+				$actions // Já escapado em orphan_button().
+			);
+		}
+		echo '</tbody></table>';
+		/* translators: %d: dias */
+		echo '<p class="hmc-muted">' . esc_html( sprintf( __( 'A exclusão definitiva só fica disponível depois de %d dias em quarentena (configurável) e nunca para arquivos que receberam acessos. Todas as operações ficam registradas no log da quarentena.', 'hmediacleaner' ), $days ) ) . '</p>';
+		if ( $count && ! $del ) {
+			echo '<p class="hmc-muted">' . esc_html__( 'Ainda não há arquivos prontos para excluir: aguarde o prazo e acompanhe se aparecem acessos.', 'hmediacleaner' ) . '</p>';
+		}
+		$t    = HMC_DB::oq_table();
+		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT path, kind, bytes, q_date, q_hits, q_last_hit, q_referer FROM {$t} WHERE q_status = %s ORDER BY q_hits DESC, bytes DESC LIMIT 30", HMC_Orphan_Quarantine::QUARANTINED ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+		if ( $rows ) {
+			echo '<h3>' . esc_html__( 'Em quarentena (os 30 com mais acessos e maiores)', 'hmediacleaner' ) . '</h3>';
+			echo '<table class="widefat striped"><thead><tr><th>' . esc_html__( 'Arquivo', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Tipo', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Tamanho', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Desde', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Acessos', 'hmediacleaner' ) . '</th></tr></thead><tbody>';
+			foreach ( $rows as $r ) {
+				printf(
+					'<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>',
+					esc_html( $r->path ),
+					esc_html( isset( $kinds[ $r->kind ] ) ? $kinds[ $r->kind ][0] : $r->kind ),
+					esc_html( size_format( (int) $r->bytes, 1 ) ),
+					esc_html( $r->q_date ? mysql2date( get_option( 'date_format' ), $r->q_date ) : '' ),
+					esc_html( (int) $r->q_hits ? $r->q_hits . ( $r->q_last_hit ? ' (' . mysql2date( 'd/m H:i', $r->q_last_hit ) . ')' : '' ) : '0' )
+				);
+			}
+			echo '</tbody></table>';
+		}
 	}
 
 	/**
@@ -625,6 +795,15 @@ class HMC_Admin {
 					?>
 				</li>
 				<li><?php esc_html_e( 'Toda operação fica registrada em um log (uploads/hmc-quarantine/hmc-log.csv). Ao desinstalar o plugin, tudo o que estiver em quarentena é restaurado automaticamente.', 'hmediacleaner' ); ?></li>
+			</ul>
+
+			<h3><?php esc_html_e( 'Arquivos órfãos', 'hmediacleaner' ); ?></h3>
+			<ul class="hmc-list">
+				<li><?php esc_html_e( 'Órfãos são arquivos que estão em uploads mas que nenhum item da biblioteca registra (miniaturas antigas, versões editadas, cópias WebP, logs, originais grandes que o WordPress reduziu, arquivos de FTP).', 'hmediacleaner' ); ?></li>
+				<li><?php esc_html_e( 'Eles também seguem o caminho quarentena → exclusão: são movidos para uma pasta protegida (nada é apagado direto) e podem ser restaurados ao lugar exato com um clique.', 'hmediacleaner' ); ?></li>
+				<li><?php esc_html_e( 'No momento de mover, cada arquivo é conferido de novo: precisa existir, ser um arquivo comum dentro de uploads e ter o mesmo tamanho e data da análise; arquivos modificados há poucos dias e os que passaram a ser registrados na biblioteca são ignorados. Itens "em uso" nunca são movidos.', 'hmediacleaner' ); ?></li>
+				<li><?php esc_html_e( 'Enquanto estão em quarentena, pedidos ao endereço original são contados. Quem recebeu acesso nunca é excluído e o painel alerta.', 'hmediacleaner' ); ?></li>
+				<li><?php esc_html_e( 'A exclusão definitiva obedece ao mesmo prazo da quarentena de anexos, e a restauração nunca sobrescreve um arquivo que já exista no destino.', 'hmediacleaner' ); ?></li>
 			</ul>
 
 			<h3><?php esc_html_e( '5. Desempenho', 'hmediacleaner' ); ?></h3>

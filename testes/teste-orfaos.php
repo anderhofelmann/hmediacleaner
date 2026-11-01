@@ -7,6 +7,7 @@
 
 define( 'ABSPATH', __DIR__ . '/' );
 function __( $t, $d = '' ) { return $t; }
+require __DIR__ . '/../hmediacleaner/includes/class-hmc-util.php';
 require __DIR__ . '/../hmediacleaner/includes/class-hmc-orphans.php';
 
 $falhas = 0;
@@ -83,6 +84,39 @@ confere( 'quarentena fica de fora', false, HMC_Orphans::top_dir_in_scope( 'hmc-q
 confere( '"2026x" não é ano', false, HMC_Orphans::top_dir_in_scope( '2026x' ) );
 confere( 'chave ignora maiúsculas e barra inicial', HMC_Orphans::key( '2026/10/Foto.JPG' ), HMC_Orphans::key( '/2026/10/foto.jpg' ) );
 confere( 'chaves de arquivos diferentes diferem', true, HMC_Orphans::key( 'a.jpg' ) !== HMC_Orphans::key( 'b.jpg' ) );
+
+echo "Quarentena de órfãos: o que pode ser tocado\n";
+confere( 'miniatura numa pasta de data', '2026/10/foto-300x300.jpg', HMC_Orphans::path_allowed( '2026/10/foto-300x300.jpg' ) );
+confere( 'arquivo na raiz de uploads', 'solto.jpg', HMC_Orphans::path_allowed( 'solto.jpg' ) );
+confere( 'normaliza // e ./', '2026/10/a.jpg', HMC_Orphans::path_allowed( '2026//10/./a.jpg' ) );
+confere( 'recusa ../', false, HMC_Orphans::path_allowed( '2026/../../wp-config.php' ) );
+confere( 'recusa caminho absoluto', false, HMC_Orphans::path_allowed( '/etc/passwd' ) );
+confere( 'recusa a própria quarentena', false, HMC_Orphans::path_allowed( 'hmc-quarantine/orphans/a.jpg' ) );
+confere( 'recusa a quarentena (maiúsculas)', false, HMC_Orphans::path_allowed( 'HMC-Quarantine/a.jpg' ) );
+confere( 'recusa pasta de plugin (elementor)', false, HMC_Orphans::path_allowed( 'elementor/css/post-1.css' ) );
+confere( 'recusa woocommerce_uploads', false, HMC_Orphans::path_allowed( 'woocommerce_uploads/x.pdf' ) );
+confere( 'recusa .htaccess', false, HMC_Orphans::path_allowed( '2026/10/.htaccess' ) );
+confere( 'recusa index.php', false, HMC_Orphans::path_allowed( '2026/10/index.php' ) );
+confere( 'recusa arquivo oculto', false, HMC_Orphans::path_allowed( '2026/10/.segredo' ) );
+confere( 'recusa vazio', false, HMC_Orphans::path_allowed( '' ) );
+confere( 'recusa byte nulo', false, HMC_Orphans::path_allowed( "2026/10/a.jpg\0.php" ) );
+confere( 'recusa não-texto', false, HMC_Orphans::path_allowed( array( '2026/a.jpg' ) ) );
+confere( 'em uso nunca é movível', false, in_array( HMC_Orphans::IN_USE, HMC_Orphans::movable_kinds(), true ) );
+confere( 'original é movível', true, in_array( HMC_Orphans::ORIGINAL, HMC_Orphans::movable_kinds(), true ) );
+confere( 'original e solto exigem confirmação reforçada', true, in_array( HMC_Orphans::ORIGINAL, HMC_Orphans::sensitive_kinds(), true ) && in_array( HMC_Orphans::LOOSE, HMC_Orphans::sensitive_kinds(), true ) );
+
+echo "Proteção de arquivos recentes\n";
+$agora = 1800000000;
+confere( 'modificado há 1 dia (proteção de 7) é recente', true, HMC_Orphans::is_recent( $agora - 86400, 7, $agora ) );
+confere( 'modificado há 8 dias não é recente', false, HMC_Orphans::is_recent( $agora - 8 * 86400, 7, $agora ) );
+confere( 'proteção 0 desliga', false, HMC_Orphans::is_recent( $agora, 0, $agora ) );
+
+echo "Exclusão definitiva\n";
+confere( 'dentro do prazo não exclui', false, HMC_Orphans::deletable( $agora - 29 * 86400, 0, 30, $agora ) );
+confere( 'no prazo e sem acessos exclui', true, HMC_Orphans::deletable( $agora - 30 * 86400, 0, 30, $agora ) );
+confere( 'com acessos nunca exclui', false, HMC_Orphans::deletable( $agora - 400 * 86400, 1, 30, $agora ) );
+confere( 'prazo 0: exclui logo, mas só sem acessos', true, HMC_Orphans::deletable( $agora, 0, 0, $agora ) );
+confere( 'prazo 0 com acesso não exclui', false, HMC_Orphans::deletable( $agora, 3, 0, $agora ) );
 
 echo "\n$total verificações, $falhas falha(s).\n";
 exit( $falhas ? 1 : 0 );

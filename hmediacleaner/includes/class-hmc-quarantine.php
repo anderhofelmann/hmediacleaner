@@ -42,7 +42,7 @@ class HMC_Quarantine {
 		return self::basedir() . 'hmc-quarantine';
 	}
 
-	private static function ensure_dir() {
+	public static function ensure_dir() {
 		$d = self::dir();
 		if ( ! is_dir( $d ) ) {
 			wp_mkdir_p( $d );
@@ -329,6 +329,8 @@ class HMC_Quarantine {
 		$t   = HMC_DB::items_table();
 		$id  = (int) $wpdb->get_var( $wpdb->prepare( "SELECT attachment_id FROM {$t} WHERE fkey = %s AND q_status = 'quarantined' LIMIT 1", HMC_Refs::file_key( $rel ) ) ); // phpcs:ignore WordPress.DB.PreparedSQL
 		if ( ! $id ) {
+			// Não é de um anexo: pode ser de um arquivo órfão em quarentena.
+			HMC_Orphan_Quarantine::track_404( $rel );
 			return;
 		}
 		// Qualquer visitante pode pedir esse endereço: no máximo uma contagem a cada 5 minutos por

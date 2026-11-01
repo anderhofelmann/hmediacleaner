@@ -11,7 +11,9 @@ defined( 'WP_UNINSTALL_PLUGIN' ) || exit;
 require_once __DIR__ . '/includes/class-hmc-util.php';
 require_once __DIR__ . '/includes/class-hmc-db.php';
 require_once __DIR__ . '/includes/class-hmc-refs.php';
+require_once __DIR__ . '/includes/class-hmc-orphans.php';
 require_once __DIR__ . '/includes/class-hmc-quarantine.php';
+require_once __DIR__ . '/includes/class-hmc-orphan-quarantine.php';
 
 if ( ! defined( 'HMC_VERSION' ) ) {
 	define( 'HMC_VERSION', 'uninstall' );
@@ -22,6 +24,8 @@ if ( function_exists( 'set_time_limit' ) ) {
 }
 
 list( $hmc_ok, $hmc_fail ) = HMC_Quarantine::restore_all();
+list( , $hmc_ofail )       = HMC_Orphan_Quarantine::restore_all();
+$hmc_fail                 += $hmc_ofail;
 
 // Se algo não pôde ser restaurado, os dados ficam para não perder o controle desses arquivos.
 if ( $hmc_fail ) {
@@ -32,6 +36,7 @@ global $wpdb;
 $wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}hmc_refs" );  // phpcs:ignore WordPress.DB.PreparedSQL
 $wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}hmc_items" ); // phpcs:ignore WordPress.DB.PreparedSQL
 $wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}hmc_orphans" ); // phpcs:ignore WordPress.DB.PreparedSQL
+$wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}hmc_oq" ); // phpcs:ignore WordPress.DB.PreparedSQL
 foreach ( array( 'hmc_state', 'hmc_summary', 'hmc_settings', 'hmc_db_version', 'hmc_theme_files', 'hmc_front_errors', 'hmc_orphan_queue', 'hmc_orphan_summary' ) as $hmc_opt ) {
 	delete_option( $hmc_opt );
 }

@@ -64,3 +64,15 @@
 .hmc-bulk .hmc-progress { margin-top: 12px; }
 #hmc-bulk-msgs { margin: 6px 0 0 18px; list-style: disc; }
 .hmc-wrap .column-cb { width: 2.2em; }
+
+/* Botão de exclusão definitiva (ação sem volta). */
+.hmc-danger.button {
+	color: #b32d2e;
+	border-color: #b32d2e;
+}
+.hmc-danger.button:hover,
+.hmc-danger.button:focus {
+	color: #fff;
+	background: #b32d2e;
+	border-color: #b32d2e;
+}

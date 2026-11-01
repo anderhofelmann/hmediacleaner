@@ -4,6 +4,7 @@
  *
  * hmc_refs  – todas as referências a mídia encontradas no site (IDs e caminhos de arquivo).
  * hmc_items – resultado da análise, uma linha por anexo da biblioteca de mídia.
+ * hmc_oq    – arquivos órfãos em quarentena (sobrevive às novas análises, ao contrário de hmc_orphans).
  *
  * A situação de quarentena fica gravada no próprio anexo (post meta _hmc_quarantine), que é a
  * fonte confiável; as colunas q_* de hmc_items são uma cópia para consulta rápida.
@@ -13,7 +14,7 @@ defined( 'ABSPATH' ) || exit;
 
 class HMC_DB {
 
-	const DB_VERSION = '3';
+	const DB_VERSION = '4';
 
 	const KIND_ID   = 1;
 	const KIND_FILE = 2;
@@ -35,6 +36,11 @@ class HMC_DB {
 		return $wpdb->prefix . 'hmc_orphans';
 	}
 
+	public static function oq_table() {
+		global $wpdb;
+		return $wpdb->prefix . 'hmc_oq';
+	}
+
 	public static function install() {
 		global $wpdb;
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
@@ -42,6 +48,7 @@ class HMC_DB {
 		$refs    = self::refs_table();
 		$items   = self::items_table();
 		$orphans = self::orphans_table();
+		$oq      = self::oq_table();
 
 		dbDelta(
 			"CREATE TABLE {$refs} (
@@ -93,6 +100,26 @@ class HMC_DB {
 			PRIMARY KEY  (path_key),
 			KEY kind (kind),
 			KEY bytes (bytes)
+			) {$collate};"
+		);
+
+		dbDelta(
+			"CREATE TABLE {$oq} (
+			path_key char(32) NOT NULL,
+			fkey char(32) NOT NULL DEFAULT '',
+			path varchar(400) NOT NULL DEFAULT '',
+			kind varchar(12) NOT NULL DEFAULT '',
+			bytes bigint(20) unsigned NOT NULL DEFAULT 0,
+			mtime datetime NULL DEFAULT NULL,
+			q_status varchar(12) NOT NULL DEFAULT '',
+			q_date datetime NULL DEFAULT NULL,
+			q_user bigint(20) unsigned NOT NULL DEFAULT 0,
+			q_hits int(10) unsigned NOT NULL DEFAULT 0,
+			q_last_hit datetime NULL DEFAULT NULL,
+			q_referer varchar(255) NOT NULL DEFAULT '',
+			PRIMARY KEY  (path_key),
+			KEY fkey (fkey),
+			KEY q_status (q_status,kind)
 			) {$collate};"
 		);
 
