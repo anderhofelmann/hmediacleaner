@@ -14,7 +14,25 @@ defined( 'ABSPATH' ) || exit;
 class HMC_Scanner {
 
 	/** Campos sem relação com mídia, pulados para ganhar tempo. */
-	const SKIP_META = array( '_edit_lock', '_edit_last', '_wp_old_slug', '_wp_old_date', '_price', '_regular_price', '_sale_price', '_stock', '_stock_status', 'total_sales', '_sku', '_weight', '_length', '_width', '_height', '_manage_stock', '_backorders', '_sold_individually', '_virtual', '_downloadable', '_tax_status', '_tax_class', '_wc_average_rating', '_wc_review_count', '_wc_rating_count', '_product_version', '_rema_attr_skip' );
+	const SKIP_META = array( '_edit_lock', '_edit_last', '_wp_old_slug', '_wp_old_date', '_price', '_regular_price', '_sale_price', '_stock', '_stock_status', 'total_sales', '_sku', '_weight', '_length', '_width', '_height', '_manage_stock', '_backorders', '_sold_individually', '_virtual', '_downloadable', '_tax_status', '_tax_class', '_wc_average_rating', '_wc_review_count', '_wc_rating_count', '_product_version' );
+
+	/**
+	 * Campos que nunca guardam referência a mídia, ignorados já na consulta ao banco.
+	 * Outros plugins ou o tema podem acrescentar os seus pelo filtro hmc_skip_meta_keys.
+	 */
+	private function skip_meta_keys() {
+		$keys = apply_filters( 'hmc_skip_meta_keys', self::SKIP_META );
+		return array_values( array_unique( array_filter( array_map( 'strval', (array) $keys ) ) ) );
+	}
+
+	/**
+	 * Tipos de conteúdo sem mídia (pedidos, cupons...), ignorados na leitura dos campos personalizados.
+	 * Em lojas com muitos pedidos isso evita ler a maior parte da tabela de campos.
+	 */
+	private function skip_post_types() {
+		$types = apply_filters( 'hmc_skip_post_types', array( 'attachment', 'revision', 'shop_order', 'shop_order_refund', 'shop_order_placehold', 'shop_coupon', 'scheduled-action', 'shop_subscription' ) );
+		return array_values( array_unique( array_filter( array_map( 'strval', (array) $types ) ) ) );
+	}
 
 	/** @var HMC_Refs */
 	private $refs;
@@ -37,7 +55,10 @@ class HMC_Scanner {
 			'theme_files' => __( 'Lendo arquivos do tema (cabeçalho, rodapé, CSS)', 'hmediacleaner' ),
 			'frontend'    => __( 'Visitando as principais páginas do site', 'hmediacleaner' ),
 			'classify'    => __( 'Classificando os arquivos da biblioteca de mídia', 'hmediacleaner' ),
+			'orphans'     => __( 'Procurando arquivos órfãos no disco', 'hmediacleaner' ),
 			'dup_prepare' => __( 'Procurando possíveis duplicatas', 'hmediacleaner' ),
+			'dup_quick'   => __( 'Comparando o início dos arquivos', 'hmediacleaner' ),
+			'dup_filter'  => __( 'Selecionando possíveis duplicatas', 'hmediacleaner' ),
 			'dup_hash'    => __( 'Comparando o conteúdo dos arquivos', 'hmediacleaner' ),
 			'finish'      => __( 'Gerando o resumo', 'hmediacleaner' ),
 		);
@@ -150,6 +171,9 @@ class HMC_Scanner {
 		global $wpdb;
 		$wpdb->query( 'TRUNCATE TABLE ' . HMC_DB::refs_table() );  // phpcs:ignore WordPress.DB.PreparedSQL
 		$wpdb->query( 'TRUNCATE TABLE ' . HMC_DB::items_table() ); // phpcs:ignore WordPress.DB.PreparedSQL
+		$wpdb->query( 'TRUNCATE TABLE ' . HMC_DB::orphans_table() ); // phpcs:ignore WordPress.DB.PreparedSQL
+		delete_option( 'hmc_orphan_queue' );
+		delete_option( 'hmc_orphan_summary' );
 		delete_option( 'hmc_summary' );
 		delete_option( 'hmc_front_errors' );
 		return false;
@@ -178,33 +202,35 @@ class HMC_Scanner {
 		return true;
 	}
 
+	/**
+	 * Campos personalizados dos conteúdos. O cursor percorre os IDs dos CONTEÚDOS (posts, produtos,
+	 * variações, páginas...), e os campos de cada lote são buscados pelo índice de post_id. Assim os
+	 * campos de pedidos, cupons e outros tipos sem mídia nunca são lidos, e a consulta custa o mesmo
+	 * em qualquer ponto da tabela (varrer a tabela de campos por meta_id, ordenando, ficava cada vez
+	 * mais lento em lojas com milhões de linhas).
+	 */
 	private function step_postmeta( array &$s ) {
 		global $wpdb;
-		if ( ! $s['cursor'] ) {
-			$s['step_total'] = (int) $wpdb->get_var( "SELECT MAX(meta_id) FROM {$wpdb->postmeta}" );
-		}
 		// Os campos dos próprios anexos (_wp_attached_file etc.) ficam de fora: não são uso.
-		$rows = $wpdb->get_results(
-			$wpdb->prepare(
-				"SELECT m.meta_id, m.post_id, m.meta_key, m.meta_value FROM {$wpdb->postmeta} m
-				INNER JOIN {$wpdb->posts} p ON p.ID = m.post_id
-				WHERE m.meta_id > %d AND p.post_type NOT IN ('attachment','revision')
-				ORDER BY m.meta_id LIMIT 1000",
-				$s['cursor']
-			)
-		);
-		if ( ! $rows ) {
+		$types = $this->skip_post_types();
+		$keys  = $this->skip_meta_keys();
+		$tph   = implode( ',', array_fill( 0, count( $types ), '%s' ) );
+		$kph   = $keys ? implode( ',', array_fill( 0, count( $keys ), '%s' ) ) : "''";
+		if ( ! $s['cursor'] ) {
+			$s['step_total'] = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_type NOT IN ({$tph})", $types ) ); // phpcs:ignore WordPress.DB.PreparedSQLPlaceholders
+		}
+		$ids = $wpdb->get_col( $wpdb->prepare( "SELECT ID FROM {$wpdb->posts} WHERE ID > %d AND post_type NOT IN ({$tph}) ORDER BY ID LIMIT 100", array_merge( array( $s['cursor'] ), $types ) ) ); // phpcs:ignore WordPress.DB.PreparedSQLPlaceholders
+		if ( ! $ids ) {
 			return false;
 		}
+		$in   = implode( ',', array_map( 'intval', $ids ) );
+		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT post_id, meta_key, meta_value FROM {$wpdb->postmeta} WHERE post_id IN ({$in}) AND meta_key NOT IN ({$kph}) AND meta_value <> ''", $keys ) ); // phpcs:ignore WordPress.DB.PreparedSQL,WordPress.DB.PreparedSQLPlaceholders
 		foreach ( $rows as $r ) {
-			$s['cursor'] = (int) $r->meta_id;
-			if ( in_array( $r->meta_key, self::SKIP_META, true ) || '' === (string) $r->meta_value ) {
-				continue;
-			}
 			$broad = (bool) preg_match( '/elementor|builder|layout|blocks|content|_data$/i', $r->meta_key );
 			$this->add( $this->refs->extract( $r->meta_value, $r->meta_key, $broad ), 'meta:' . $r->meta_key . ':' . $r->post_id );
 		}
-		$s['done'] = $s['cursor'];
+		$s['cursor'] = (int) end( $ids );
+		$s['done']  += count( $ids );
 		return true;
 	}
 
@@ -454,7 +480,7 @@ class HMC_Scanner {
 		$keys = array();
 		foreach ( $rows as $r ) {
 			$file = isset( $meta[ $r->ID ]['_wp_attached_file'] ) ? $meta[ $r->ID ]['_wp_attached_file'] : '';
-			$md   = isset( $meta[ $r->ID ]['_wp_attachment_metadata'] ) ? maybe_unserialize( $meta[ $r->ID ]['_wp_attachment_metadata'] ) : array();
+			$md   = isset( $meta[ $r->ID ]['_wp_attachment_metadata'] ) ? HMC_Util::unser( $meta[ $r->ID ]['_wp_attachment_metadata'] ) : array();
 			$k    = array();
 			if ( '' !== $file ) {
 				$k[] = HMC_Refs::file_key( $file );
@@ -479,11 +505,20 @@ class HMC_Scanner {
 		foreach ( $rows as $r ) {
 			$id   = (int) $r->ID;
 			$file = isset( $meta[ $id ]['_wp_attached_file'] ) ? $meta[ $id ]['_wp_attached_file'] : '';
-			$md   = isset( $meta[ $id ]['_wp_attachment_metadata'] ) ? maybe_unserialize( $meta[ $id ]['_wp_attachment_metadata'] ) : array();
-			$q    = isset( $meta[ $id ][ HMC_Quarantine::META ] ) ? maybe_unserialize( $meta[ $id ][ HMC_Quarantine::META ] ) : null;
+			$md   = isset( $meta[ $id ]['_wp_attachment_metadata'] ) ? HMC_Util::unser( $meta[ $id ]['_wp_attachment_metadata'] ) : array();
+			$q    = isset( $meta[ $id ][ HMC_Quarantine::META ] ) ? HMC_Util::unser( $meta[ $id ][ HMC_Quarantine::META ] ) : null;
 			$inq  = is_array( $q );
 			// Arquivos em quarentena são medidos na pasta da quarentena.
 			list( $bytes, $orig_bytes, $count ) = $this->disk_usage( $inq ? $qdir . '/' . $id . '/' : $basedir, $file, is_array( $md ) ? $md : array() );
+			if ( ! $inq && '' !== $file ) {
+				// Caminhos que este anexo registra: a procura de órfãos os usa para saber o que é "de alguém".
+				foreach ( $this->registered_paths( $file, is_array( $md ) ? $md : array() ) as $rel ) {
+					$this->buf[] = array( HMC_DB::KIND_KNOWN, HMC_Orphans::key( $rel ), (string) $id );
+				}
+				if ( count( $this->buf ) >= 500 ) {
+					$this->flush();
+				}
+			}
 
 			$used_in = '';
 			if ( isset( $used_id[ (string) $id ] ) ) {
@@ -574,8 +609,46 @@ class HMC_Scanner {
 	}
 
 	/**
+	 * Caminhos (relativos a uploads) que um anexo registra: o arquivo, as miniaturas, o original antes do
+	 * -scaled e a cópia de segurança de compressão do WP-Optimize. Cada nome vem do banco e passa por
+	 * validação: o que tiver "../" ou barras é descartado.
+	 *
+	 * @return string[]
+	 */
+	private function registered_paths( $file, array $md ) {
+		$file = HMC_Util::safe_rel( $file );
+		if ( false === $file ) {
+			return array();
+		}
+		$dir    = dirname( $file );
+		$prefix = ( '.' === $dir ) ? '' : $dir . '/';
+		$names  = array( basename( $file ) );
+		if ( ! empty( $md['sizes'] ) && is_array( $md['sizes'] ) ) {
+			foreach ( $md['sizes'] as $size ) {
+				$n = is_array( $size ) && isset( $size['file'] ) ? HMC_Util::safe_name( $size['file'] ) : false;
+				if ( false !== $n ) {
+					$names[] = $n;
+				}
+			}
+		}
+		$n = isset( $md['original_image'] ) ? HMC_Util::safe_name( $md['original_image'] ) : false;
+		if ( false !== $n ) {
+			$names[] = $n;
+		}
+		$info    = pathinfo( basename( $file ) );
+		$names[] = $info['filename'] . '-updraft-pre-smush-original.' . ( isset( $info['extension'] ) ? $info['extension'] : '' );
+		$out     = array();
+		foreach ( array_unique( $names ) as $name ) {
+			$out[] = $prefix . $name;
+		}
+		return $out;
+	}
+
+	/**
 	 * Espaço ocupado no disco pelo anexo: arquivo, miniaturas, original antes do -scaled
 	 * e cópia de segurança de compressão do WP-Optimize, se existirem.
+	 *
+	 * Uma única consulta ao sistema de arquivos por caminho (filesize devolve false se não existe).
 	 *
 	 * @return array{0:int,1:int,2:int} bytes totais, bytes do arquivo principal, quantidade de arquivos.
 	 */
@@ -583,32 +656,166 @@ class HMC_Scanner {
 		if ( '' === $file ) {
 			return array( 0, 0, 0 );
 		}
-		$path  = $basedir . ltrim( $file, '/' );
-		$dir   = dirname( $path ) . '/';
-		$paths = array( $path );
-		if ( ! empty( $md['sizes'] ) && is_array( $md['sizes'] ) ) {
-			foreach ( $md['sizes'] as $size ) {
-				if ( ! empty( $size['file'] ) ) {
-					$paths[] = $dir . $size['file'];
-				}
-			}
+		$paths = $this->registered_paths( $file, $md );
+		if ( ! $paths ) {
+			return array( 0, 0, 0 );
 		}
-		if ( ! empty( $md['original_image'] ) ) {
-			$paths[] = $dir . $md['original_image'];
-		}
-		$info    = pathinfo( $path );
-		$paths[] = $dir . $info['filename'] . '-updraft-pre-smush-original.' . ( isset( $info['extension'] ) ? $info['extension'] : '' );
-
-		$orig  = is_file( $path ) ? (int) filesize( $path ) : 0;
+		$orig  = 0;
 		$bytes = 0;
 		$count = 0;
-		foreach ( array_unique( $paths ) as $p ) {
-			if ( is_file( $p ) ) {
-				$bytes += (int) filesize( $p );
-				$count++;
+		foreach ( $paths as $i => $rel ) {
+			$size = @filesize( $basedir . $rel ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			if ( false === $size ) {
+				continue;
+			}
+			$bytes += (int) $size;
+			$count++;
+			if ( 0 === $i ) {
+				$orig = (int) $size;
 			}
 		}
 		return array( $bytes, $orig, $count );
+	}
+
+	/* ---------------------------------------------------------------- órfãos */
+
+	/**
+	 * Arquivos em uploads que nenhum anexo registra. Percorre uma pasta por vez (retomável) e só
+	 * trata das pastas de data (2026/10/) e dos arquivos soltos na raiz de uploads. Somente leitura.
+	 */
+	private function step_orphans( array &$s ) {
+		if ( ! HMC_DB::settings()['orphans'] ) {
+			return false;
+		}
+		$basedir = HMC_Quarantine::basedir();
+		if ( ! $s['cursor'] ) {
+			$queue = array( '' ); // Raiz de uploads: só os arquivos soltos nela.
+			$list  = @scandir( $basedir ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			foreach ( is_array( $list ) ? $list : array() as $e ) {
+				if ( HMC_Orphans::top_dir_in_scope( $e ) && is_dir( $basedir . $e ) && ! is_link( $basedir . $e ) ) {
+					$queue[] = $e;
+				}
+			}
+			update_option( 'hmc_orphan_queue', $queue, false );
+			$s['step_total'] = count( $queue );
+			$s['cursor']     = -1;
+			return true;
+		}
+		$queue = get_option( 'hmc_orphan_queue', array() );
+		if ( ! is_array( $queue ) || ! $queue ) {
+			delete_option( 'hmc_orphan_queue' );
+			return false;
+		}
+		$dir = (string) array_shift( $queue );
+		$this->scan_dir_for_orphans( $basedir, $dir, $queue );
+		update_option( 'hmc_orphan_queue', $queue, false );
+		$s['done']++;
+		$s['step_total'] = max( (int) $s['step_total'], $s['done'] + count( $queue ) );
+		return true;
+	}
+
+	/**
+	 * Lista os arquivos de UMA pasta, descobre quais nenhum anexo registra e grava os órfãos.
+	 * As subpastas (dentro das pastas de data) entram na fila.
+	 */
+	private function scan_dir_for_orphans( $basedir, $dir, array &$queue ) {
+		global $wpdb;
+		$prefix  = '' === $dir ? '' : $dir . '/';
+		$entries = @scandir( $basedir . $prefix ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+		if ( ! is_array( $entries ) ) {
+			return;
+		}
+		$files = array(); // caminho relativo => array( bytes, data de modificação )
+		foreach ( $entries as $e ) {
+			if ( '.' === $e || '..' === $e ) {
+				continue;
+			}
+			$abs = $basedir . $prefix . $e;
+			if ( is_link( $abs ) ) {
+				continue; // Nunca segue links simbólicos.
+			}
+			$rel = $prefix . $e;
+			if ( is_dir( $abs ) ) {
+				if ( '' !== $dir && 'hmc-quarantine' !== $e ) {
+					$queue[] = $rel;
+				}
+				continue;
+			}
+			$size = @filesize( $abs ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			if ( false === $size || false === HMC_Util::safe_rel( $rel ) ) {
+				continue;
+			}
+			$files[ $rel ] = array( (int) $size, (int) @filemtime( $abs ) ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+		}
+		if ( ! $files ) {
+			return;
+		}
+
+		// Chaves que interessam: os próprios arquivos e os possíveis "arquivos base" de que derivam.
+		$wanted = array();
+		foreach ( $files as $rel => $info ) {
+			$wanted[ HMC_Orphans::key( $rel ) ] = true;
+			$ask                                = array();
+			HMC_Orphans::kind_for(
+				$rel,
+				1,
+				function ( $r ) use ( &$ask ) {
+					$ask[] = $r;
+					return false;
+				},
+				function () {
+					return false;
+				}
+			);
+			foreach ( $ask as $r ) {
+				$wanted[ HMC_Orphans::key( $r ) ] = true;
+			}
+		}
+		$known    = $this->lookup( HMC_DB::KIND_KNOWN, array_keys( $wanted ) ); // Uma consulta em lotes por pasta.
+		$is_known = function ( $r ) use ( $known ) {
+			return isset( $known[ HMC_Orphans::key( $r ) ] );
+		};
+
+		$kinds = array();
+		$loose = array();
+		foreach ( $files as $rel => $info ) {
+			if ( isset( $known[ HMC_Orphans::key( $rel ) ] ) ) {
+				continue; // Algum anexo o registra: não é órfão.
+			}
+			$kind = HMC_Orphans::kind_for(
+				$rel,
+				$info[0],
+				$is_known,
+				function () {
+					return false;
+				}
+			);
+			if ( null === $kind ) {
+				continue;
+			}
+			$kinds[ $rel ] = $kind;
+			if ( HMC_Orphans::LOOSE === $kind ) {
+				$loose[ $rel ] = HMC_Refs::file_key( $rel );
+			}
+		}
+		// Arquivo solto que o site referencia (URL no conteúdo, no tema...) não é candidato.
+		if ( $loose ) {
+			$used = $this->lookup( HMC_DB::KIND_FILE, array_values( $loose ) );
+			foreach ( $loose as $rel => $k ) {
+				if ( isset( $used[ $k ] ) ) {
+					$kinds[ $rel ] = HMC_Orphans::IN_USE;
+				}
+			}
+		}
+
+		$table = HMC_DB::orphans_table();
+		foreach ( array_chunk( array_keys( $kinds ), 300 ) as $chunk ) {
+			$values = array();
+			foreach ( $chunk as $rel ) {
+				$values[] = $wpdb->prepare( '(%s,%s,%d,%s,%s)', HMC_Orphans::key( $rel ), substr( $rel, 0, 400 ), $files[ $rel ][0], gmdate( 'Y-m-d H:i:s', $files[ $rel ][1] ), $kinds[ $rel ] );
+			}
+			$wpdb->query( "REPLACE INTO {$table} (path_key,path,bytes,mtime,kind) VALUES " . implode( ',', $values ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+		}
 	}
 
 	/* ---------------------------------------------------------------- duplicatas */
@@ -625,6 +832,57 @@ class HMC_Scanner {
 		return false;
 	}
 
+	/**
+	 * 1ª fase: lê só o início (64 KB) dos arquivos com tamanho igual. Arquivos pequenos já recebem o hash
+	 * completo. Isso evita ler, por inteiro, milhares de fotos que só têm o mesmo tamanho por coincidência.
+	 */
+	private function step_dup_quick( array &$s ) {
+		global $wpdb;
+		$t = HMC_DB::items_table();
+		if ( ! $s['step_total'] ) {
+			$s['step_total'] = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$t} WHERE hash = 'pending'" ); // phpcs:ignore WordPress.DB.PreparedSQL
+		}
+		$rows = $wpdb->get_results( "SELECT attachment_id, file, orig_bytes FROM {$t} WHERE hash = 'pending' LIMIT 200" ); // phpcs:ignore WordPress.DB.PreparedSQL
+		if ( ! $rows ) {
+			return false;
+		}
+		$basedir = HMC_Quarantine::basedir();
+		foreach ( $rows as $r ) {
+			$rel  = HMC_Util::safe_rel( $r->file );
+			$path = false === $rel ? '' : $basedir . $rel;
+			$hash = '';
+			if ( '' !== $path && HMC_Util::is_plain_file( $path ) && is_readable( $path ) ) {
+				if ( (int) $r->orig_bytes <= 65536 ) {
+					$hash = (string) md5_file( $path ); // Pequeno: este já é o hash completo.
+				} else {
+					$fh = fopen( $path, 'rb' ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+					if ( $fh ) {
+						$hash = 'q:' . substr( md5( (string) fread( $fh, 65536 ) ), 0, 30 ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+						fclose( $fh ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+					}
+				}
+			}
+			$wpdb->update( $t, array( 'hash' => $hash ), array( 'attachment_id' => $r->attachment_id ) );
+		}
+		$s['done'] += count( $rows );
+		return true;
+	}
+
+	/**
+	 * Descarta quem não tem par: só segue para o hash completo quem tem o mesmo tamanho E o mesmo início.
+	 */
+	private function step_dup_filter( array &$s ) {
+		global $wpdb;
+		$t = HMC_DB::items_table();
+		$wpdb->query(
+			"UPDATE {$t} i LEFT JOIN (
+				SELECT orig_bytes, hash FROM {$t} WHERE hash LIKE 'q:%' GROUP BY orig_bytes, hash HAVING COUNT(*) > 1
+			) d ON d.orig_bytes = i.orig_bytes AND d.hash = i.hash
+			SET i.hash = IF(d.hash IS NULL, NULL, 'pending') WHERE i.hash LIKE 'q:%'"
+		); // phpcs:ignore WordPress.DB.PreparedSQL
+		return false;
+	}
+
 	private function step_dup_hash( array &$s ) {
 		global $wpdb;
 		$t = HMC_DB::items_table();
@@ -635,11 +893,11 @@ class HMC_Scanner {
 		if ( ! $rows ) {
 			return false;
 		}
-		$up      = wp_upload_dir( null, false );
-		$basedir = trailingslashit( $up['basedir'] );
+		$basedir = HMC_Quarantine::basedir();
 		foreach ( $rows as $r ) {
-			$path = $basedir . ltrim( $r->file, '/' );
-			$hash = is_readable( $path ) ? (string) md5_file( $path ) : '';
+			$rel  = HMC_Util::safe_rel( $r->file );
+			$path = false === $rel ? '' : $basedir . $rel;
+			$hash = ( '' !== $path && HMC_Util::is_plain_file( $path ) && is_readable( $path ) ) ? (string) md5_file( $path ) : '';
 			$wpdb->update( $t, array( 'hash' => $hash ), array( 'attachment_id' => $r->attachment_id ) );
 		}
 		$s['done'] += count( $rows );
@@ -680,7 +938,13 @@ class HMC_Scanner {
 		$dup_used              = $wpdb->get_row( "SELECT COUNT(*) n, COALESCE(SUM(bytes),0) b FROM {$t} WHERE dup_of IS NOT NULL AND status = 'used' AND q_status = ''" );   // phpcs:ignore WordPress.DB.PreparedSQL
 		$summary['dup_unused'] = array( 'count' => (int) $dup_unused->n, 'bytes' => (int) $dup_unused->b );
 		$summary['dup_used']   = array( 'count' => (int) $dup_used->n, 'bytes' => (int) $dup_used->b );
-		$summary['refs']       = (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . HMC_DB::refs_table() ); // phpcs:ignore WordPress.DB.PreparedSQL
+		$summary['refs']       = (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . HMC_DB::refs_table() . ' WHERE kind IN (' . (int) HMC_DB::KIND_ID . ',' . (int) HMC_DB::KIND_FILE . ')' ); // Só referências reais (não os caminhos registrados). phpcs:ignore WordPress.DB.PreparedSQL
+
+		$orph = array();
+		foreach ( $wpdb->get_results( 'SELECT kind, COUNT(*) n, COALESCE(SUM(bytes),0) b FROM ' . HMC_DB::orphans_table() . ' GROUP BY kind' ) as $r ) { // phpcs:ignore WordPress.DB.PreparedSQL
+			$orph[ $r->kind ] = array( 'count' => (int) $r->n, 'bytes' => (int) $r->b );
+		}
+		update_option( 'hmc_orphan_summary', array( 'finished' => time(), 'kinds' => $orph ), false );
 
 		update_option( 'hmc_summary', $summary, false );
 		return false;

@@ -59,6 +59,7 @@ class HMC_Updater {
 	public static function init() {
 		add_filter( 'pre_set_site_transient_update_plugins', array( __CLASS__, 'check_update' ) );
 		add_filter( 'plugins_api', array( __CLASS__, 'plugin_info' ), 10, 3 );
+		add_filter( 'upgrader_pre_download', array( __CLASS__, 'pre_download' ), 10, 4 );
 		add_action( 'admin_notices', array( __CLASS__, 'render_notice' ) );
 	}
 
@@ -87,19 +88,72 @@ class HMC_Updater {
 			return $transient;
 		}
 
-		// Espelho em texto puro permitiria trocar o arquivo no caminho.
-		if ( 0 !== stripos( (string) $release['package'], 'https://' ) ) {
-			return $transient;
-		}
-
-		// Confere o hash publicado contra o arquivo real.
-		if ( ! self::hash_matches_release( $release ) ) {
+		// Só oferece a atualização se o pacote vem do próprio repositório, por HTTPS, e a release
+		// publica o hash. O hash é conferido contra o arquivo na hora da instalação (pre_download).
+		if ( ! self::package_is_trusted( $release ) ) {
 			return $transient;
 		}
 
 		$transient->response[ self::PLUGIN_FILE ] = self::build_update_object( $release );
 
 		return $transient;
+	}
+
+	/**
+	 * O pacote vem de uma release do repositório oficial, por HTTPS, e há SHA-256 publicado?
+	 *
+	 * Sem hash a atualização NÃO é oferecida: instalar código sem poder conferi-lo é o risco que
+	 * este atualizador existe para evitar.
+	 *
+	 * @param array $release Dados da release.
+	 * @return bool
+	 */
+	public static function package_is_trusted( $release ) {
+		if ( ! is_array( $release ) || empty( $release['package'] ) || empty( $release['sha256'] ) ) {
+			return false;
+		}
+		$prefixo = 'https://github.com/' . self::REPO . '/releases/download/';
+		return 0 === strpos( (string) $release['package'], $prefixo )
+			&& false === strpos( (string) $release['package'], '..' )
+			&& (bool) preg_match( '/^[a-f0-9]{64}$/', (string) $release['sha256'] );
+	}
+
+	/**
+	 * Confere o SHA-256 do arquivo que o WordPress vai INSTALAR.
+	 *
+	 * O WordPress baixaria o pacote de novo na hora da instalação; conferir o hash só ao procurar
+	 * atualizações não garante que o arquivo instalado seja o conferido. Aqui o pacote é baixado
+	 * uma vez, o hash é verificado e o próprio arquivo verificado é entregue ao instalador.
+	 *
+	 * @param false|string|WP_Error $reply      Resposta anterior do filtro.
+	 * @param string                $package    Endereço do pacote.
+	 * @param WP_Upgrader           $upgrader   Instância do atualizador.
+	 * @param array                 $hook_extra Dados extras (inclui o plugin).
+	 * @return false|string|WP_Error
+	 */
+	public static function pre_download( $reply, $package, $upgrader = null, $hook_extra = array() ) {
+		$plugin = is_array( $hook_extra ) && isset( $hook_extra['plugin'] ) ? $hook_extra['plugin'] : '';
+		if ( self::PLUGIN_FILE !== $plugin ) {
+			return $reply; // Não é o nosso plugin: o WordPress segue normalmente.
+		}
+
+		$release = self::get_release_info();
+		if ( ! self::package_is_trusted( $release ) || $release['package'] !== $package ) {
+			return new WP_Error( 'hmc_pacote_nao_confiavel', __( 'HMediaCleaner: o pacote de atualização não é de uma release confiável do repositório; nada foi instalado.', 'hmediacleaner' ) );
+		}
+
+		$arquivo = download_url( $package, 60 );
+		if ( is_wp_error( $arquivo ) ) {
+			return $arquivo;
+		}
+
+		$hash = hash_file( 'sha256', $arquivo );
+		if ( ! is_string( $hash ) || ! hash_equals( $release['sha256'], $hash ) ) {
+			@unlink( $arquivo ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			return new WP_Error( 'hmc_hash_diferente', __( 'HMediaCleaner: o SHA-256 do pacote não confere com o publicado na release; nada foi instalado.', 'hmediacleaner' ) );
+		}
+
+		return $arquivo;
 	}
 
 	/**
@@ -221,7 +275,8 @@ class HMC_Updater {
 			$url,
 			array(
 				'timeout'    => 8,
-				'user-agent' => 'HMediaCleaner/' . self::current_version() . '; ' . home_url(),
+				// Sem o endereço do site: o GitHub não precisa saber onde o plugin está instalado.
+				'user-agent' => 'HMediaCleaner/' . self::current_version(),
 				'headers'    => array( 'Accept' => 'application/vnd.github+json' ),
 			)
 		);
@@ -239,7 +294,8 @@ class HMC_Updater {
 
 		$pacote = '';
 		foreach ( (array) $corpo['assets'] as $asset ) {
-			if ( isset( $asset['name'] ) && self::ASSET_NAME === $asset['name'] && isset( $asset['browser_download_url'] ) ) {
+			// Aceita "hmediacleaner.zip" e também "hmediacleaner-0.4.0.zip" (o nome que o GitHub Actions gera).
+			if ( isset( $asset['name'], $asset['browser_download_url'] ) && preg_match( '/^hmediacleaner(?:-[0-9][0-9a-z.\-]*)?\.zip$/i', (string) $asset['name'] ) ) {
 				$pacote = $asset['browser_download_url'];
 				break;
 			}
@@ -257,37 +313,6 @@ class HMC_Updater {
 			'changelog' => isset( $corpo['body'] ) ? wp_kses_post( $corpo['body'] ) : '',
 			'sha256'    => self::extract_sha256( isset( $corpo['body'] ) ? $corpo['body'] : '' ),
 		);
-	}
-
-	/**
-	 * Confere o hash do pacote com o publicado na release.
-	 *
-	 * Sem hash publicado, a atualização segue. Com hash, ele precisa bater:
-	 * divergência significa arquivo trocado no caminho.
-	 *
-	 * @param array $release
-	 * @return bool
-	 */
-	private static function hash_matches_release( $release ) {
-		$esperado = isset( $release['sha256'] ) ? $release['sha256'] : '';
-
-		if ( '' === $esperado ) {
-			return true;
-		}
-
-		$arquivo = download_url( $release['package'], 30 );
-
-		if ( is_wp_error( $arquivo ) || ! $arquivo ) {
-			return false;
-		}
-
-		$hash = hash_file( 'sha256', $arquivo );
-
-		if ( function_exists( 'unlink' ) ) {
-			@unlink( $arquivo ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
-		}
-
-		return hash_equals( $esperado, (string) $hash );
 	}
 
 	/**

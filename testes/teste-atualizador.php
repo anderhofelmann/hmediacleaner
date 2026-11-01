@@ -16,6 +16,8 @@ require_once HMC_DIR . 'includes/class-hmc-updater.php';
 $fails = 0;
 $total = 0;
 
+define( 'HASH_PADRAO', str_repeat( 'c', 64 ) );
+
 function check( $desc, $esperado, $obtido ) {
 	global $fails, $total;
 	$total++;
@@ -49,7 +51,7 @@ function github( $tag, $com_zip = true, $corpo_extra = '', $code = 200 ) {
 			array(
 				'tag_name' => $tag,
 				'html_url' => 'https://github.com/anderhofelmann/hmediacleaner/releases/tag/' . $tag,
-				'body'     => $corpo_extra,
+				'body'     => 'sha256: ' . HASH_PADRAO . "\n" . $corpo_extra,
 				'assets'   => $assets,
 			)
 		),
@@ -145,99 +147,132 @@ check( 'lê com crase',            $hash, HMC_Updater::extract_sha256( "sha256: 
 check( 'ignora hash inválido',    '',    HMC_Updater::extract_sha256( 'sha256: abc' ) );
 check( 'sem hash devolve vazio',  '',    HMC_Updater::extract_sha256( 'texto' ) );
 
-// Release sem hash: a atualização segue.
+// Release sem hash: a atualização NÃO é oferecida (instalar sem poder conferir é o risco a evitar).
 limpar();
-github( 'v0.4.0' );
-$t = HMC_Updater::check_update( transiente_vazio() );
-check( 'sem hash: atualização liberada', 1, count( $t->response ) );
-
-// Pacote em http é recusado.
-$GLOBALS['transients'] = array();
-$GLOBALS['http_calls'] = array();
 $GLOBALS['http_response'] = array(
 	'code' => 200,
 	'body' => json_encode(
 		array(
 			'tag_name' => 'v0.4.0',
+			'body'     => 'sem hash aqui',
 			'assets'   => array(
 				array(
 					'name'                 => 'hmediacleaner.zip',
-					'browser_download_url' => 'http://exemplo.test/hmediacleaner.zip',
+					'browser_download_url' => 'https://github.com/anderhofelmann/hmediacleaner/releases/download/v0.4.0/hmediacleaner.zip',
 				),
 			),
 		)
 	),
 );
+$t = HMC_Updater::check_update( transiente_vazio() );
+check( 'sem hash: atualização recusada', 0, count( $t->response ) );
+
+/** Release com hash e URL configuráveis. */
+function release_com( $url, $hash ) {
+	$GLOBALS['transients'] = array();
+	$GLOBALS['http_calls'] = array();
+	$GLOBALS['http_response'] = array(
+		'code' => 200,
+		'body' => json_encode(
+			array(
+				'tag_name' => 'v0.4.0',
+				'body'     => 'sha256: ' . $hash,
+				'assets'   => array(
+					array(
+						'name'                 => 'hmediacleaner.zip',
+						'browser_download_url' => $url,
+					),
+				),
+			)
+		),
+	);
+}
+
+$repo_url = 'https://github.com/anderhofelmann/hmediacleaner/releases/download/v0.4.0/hmediacleaner.zip';
+
+release_com( 'http://exemplo.test/hmediacleaner.zip', HASH_PADRAO );
 $t = HMC_Updater::check_update( transiente_vazio() );
 check( 'pacote em http é recusado', 0, count( $t->response ) );
 
-// Hash confere: passa.
-$pacote   = 'conteudo-do-plugin';
+release_com( 'https://exemplo.test/hmediacleaner.zip', HASH_PADRAO );
+$t = HMC_Updater::check_update( transiente_vazio() );
+check( 'https de outro servidor é recusado', 0, count( $t->response ) );
+
+release_com( 'https://github.com/outro-usuario/outro-repo/releases/download/v0.4.0/hmediacleaner.zip', HASH_PADRAO );
+$t = HMC_Updater::check_update( transiente_vazio() );
+check( 'release de OUTRO repositório é recusada', 0, count( $t->response ) );
+
+release_com( 'https://github.com/anderhofelmann/hmediacleaner/releases/download/../../x/hmediacleaner.zip', HASH_PADRAO );
+$t = HMC_Updater::check_update( transiente_vazio() );
+check( 'URL com ../ é recusada', 0, count( $t->response ) );
+
+release_com( $repo_url, HASH_PADRAO );
+$t = HMC_Updater::check_update( transiente_vazio() );
+check( 'repositório oficial + hash: atualização oferecida', 1, count( $t->response ) );
+check( 'a checagem não baixa o pacote (só consulta a API)', 1, count( $GLOBALS['http_calls'] ) );
+
+// Nome do arquivo da release: "hmediacleaner.zip" e "hmediacleaner-0.4.0.zip" valem; outros não.
+foreach ( array( 'hmediacleaner.zip' => 1, 'hmediacleaner-0.4.0.zip' => 1, 'hmediacleaner-0.4.0-rc1.zip' => 1, 'outro-plugin.zip' => 0, 'hmediacleaner.tar.gz' => 0, 'hmediacleaner-source.zip' => 0 ) as $nome => $esperado_n ) {
+	$GLOBALS['transients'] = array();
+	$GLOBALS['http_calls'] = array();
+	$GLOBALS['http_response'] = array(
+		'code' => 200,
+		'body' => json_encode(
+			array(
+				'tag_name' => 'v0.4.0',
+				'body'     => 'sha256: ' . HASH_PADRAO,
+				'assets'   => array( array( 'name' => $nome, 'browser_download_url' => 'https://github.com/anderhofelmann/hmediacleaner/releases/download/v0.4.0/' . $nome ) ),
+			)
+		),
+	);
+	$t_ = HMC_Updater::check_update( transiente_vazio() );
+	check( "arquivo da release \"$nome\"", $esperado_n, count( $t_->response ) );
+}
+
+echo "\n[5b] Verificação na hora da instalação (upgrader_pre_download)\n";
+
+$pacote    = 'conteudo-do-plugin';
 $hash_real = hash( 'sha256', $pacote );
+$extra     = array( 'plugin' => 'hmediacleaner/hmediacleaner.php' );
 
-$GLOBALS['transients']        = array();
-$GLOBALS['http_calls']        = array();
-$GLOBALS['download_content']  = $pacote;
-$GLOBALS['http_response']     = array(
-	'code' => 200,
-	'body' => json_encode(
-		array(
-			'tag_name' => 'v0.4.0',
-			'body'     => "sha256: $hash_real",
-			'assets'   => array(
-				array(
-					'name'                 => 'hmediacleaner.zip',
-					'browser_download_url' => 'https://github.com/x/hmediacleaner.zip',
-				),
-			),
-		)
-	),
-);
-$t = HMC_Updater::check_update( transiente_vazio() );
-check( 'hash confere: atualização liberada', 1, count( $t->response ) );
+release_com( $repo_url, $hash_real );
+$GLOBALS['download_content'] = $pacote;
+$r = HMC_Updater::pre_download( false, $repo_url, null, $extra );
+check( 'hash confere: devolve o arquivo verificado', true, is_string( $r ) && file_exists( $r ) );
+check( 'o arquivo entregue é o verificado', $pacote, is_string( $r ) ? file_get_contents( $r ) : null );
+if ( is_string( $r ) ) {
+	@unlink( $r );
+}
 
-// Hash divergente: bloqueia.
-$GLOBALS['transients']    = array();
-$GLOBALS['http_calls']    = array();
-$GLOBALS['http_response'] = array(
-	'code' => 200,
-	'body' => json_encode(
-		array(
-			'tag_name' => 'v0.4.0',
-			'body'     => 'sha256: ' . str_repeat( 'b', 64 ),
-			'assets'   => array(
-				array(
-					'name'                 => 'hmediacleaner.zip',
-					'browser_download_url' => 'https://github.com/x/hmediacleaner.zip',
-				),
-			),
-		)
-	),
-);
-$t = HMC_Updater::check_update( transiente_vazio() );
-check( 'hash divergente: atualização bloqueada', 0, count( $t->response ) );
+release_com( $repo_url, $hash_real );
+$GLOBALS['download_content'] = 'conteudo-ADULTERADO';
+$r = HMC_Updater::pre_download( false, $repo_url, null, $extra );
+check( 'arquivo trocado no caminho: bloqueado', true, is_wp_error( $r ) );
+check( 'motivo: hash diferente', 'hmc_hash_diferente', is_wp_error( $r ) ? $r->code : '' );
 
-// Falha no download também bloqueia.
-$GLOBALS['transients']       = array();
-$GLOBALS['http_calls']       = array();
+release_com( $repo_url, $hash_real );
 $GLOBALS['download_content'] = null;
-$GLOBALS['http_response']    = array(
-	'code' => 200,
-	'body' => json_encode(
-		array(
-			'tag_name' => 'v0.4.0',
-			'body'     => "sha256: $hash_real",
-			'assets'   => array(
-				array(
-					'name'                 => 'hmediacleaner.zip',
-					'browser_download_url' => 'https://github.com/x/hmediacleaner.zip',
-				),
-			),
-		)
-	),
-);
-$t = HMC_Updater::check_update( transiente_vazio() );
-check( 'falha no download: bloqueada', 0, count( $t->response ) );
+$r = HMC_Updater::pre_download( false, $repo_url, null, $extra );
+check( 'falha no download: bloqueada', true, is_wp_error( $r ) );
+
+release_com( $repo_url, $hash_real );
+$GLOBALS['download_content'] = $pacote;
+$r = HMC_Updater::pre_download( false, 'https://exemplo.test/outro.zip', null, $extra );
+check( 'pacote diferente do anunciado: bloqueado', 'hmc_pacote_nao_confiavel', is_wp_error( $r ) ? $r->code : '' );
+
+$GLOBALS['transients'] = array();
+$GLOBALS['http_response'] = null;
+$r = HMC_Updater::pre_download( false, $repo_url, null, $extra );
+check( 'sem conseguir consultar a release: bloqueado', true, is_wp_error( $r ) );
+
+release_com( $repo_url, $hash_real );
+check( 'pacote de outro plugin não é tocado', false, HMC_Updater::pre_download( false, 'https://exemplo.test/x.zip', null, array( 'plugin' => 'woocommerce/woocommerce.php' ) ) );
+check( 'sem dados do plugin não é tocado', false, HMC_Updater::pre_download( false, 'https://exemplo.test/x.zip', null, array() ) );
+
+check( 'package_is_trusted: sem hash', false, HMC_Updater::package_is_trusted( array( 'package' => $repo_url, 'sha256' => '' ) ) );
+check( 'package_is_trusted: hash mal formado', false, HMC_Updater::package_is_trusted( array( 'package' => $repo_url, 'sha256' => 'xyz' ) ) );
+check( 'package_is_trusted: tudo certo', true, HMC_Updater::package_is_trusted( array( 'package' => $repo_url, 'sha256' => HASH_PADRAO ) ) );
+check( 'package_is_trusted: não é array', false, HMC_Updater::package_is_trusted( null ) );
 
 $GLOBALS['download_content'] = $pacote;
 

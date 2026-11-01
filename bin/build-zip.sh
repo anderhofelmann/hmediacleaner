@@ -26,6 +26,9 @@ while IFS= read -r arquivo; do
 done < <(find "$NOME" -name '*.php')
 rm -f "$RAIZ/$NOME.zip" "$SAIDA"
 zip -qr "$SAIDA" "$NOME" -x '*.DS_Store' '*/node_modules/*' '*/.git/*'
+# Cópia com o nome exato que as versões já instaladas procuram na release (hmediacleaner.zip).
+cp "$SAIDA" "$RAIZ/$NOME.zip"
 echo "ZIP gerado: $SAIDA"
+echo "Arquivo da release: $RAIZ/$NOME.zip"
 echo "Versao: $VERSAO"
 echo "sha256: $(sha256sum "$SAIDA" | cut -d' ' -f1)"

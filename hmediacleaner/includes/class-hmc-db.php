@@ -13,10 +13,12 @@ defined( 'ABSPATH' ) || exit;
 
 class HMC_DB {
 
-	const DB_VERSION = '2';
+	const DB_VERSION = '3';
 
 	const KIND_ID   = 1;
 	const KIND_FILE = 2;
+	/** Caminhos que algum anexo registra (usado na procura de arquivos órfãos). */
+	const KIND_KNOWN = 3;
 
 	public static function refs_table() {
 		global $wpdb;
@@ -28,12 +30,18 @@ class HMC_DB {
 		return $wpdb->prefix . 'hmc_items';
 	}
 
+	public static function orphans_table() {
+		global $wpdb;
+		return $wpdb->prefix . 'hmc_orphans';
+	}
+
 	public static function install() {
 		global $wpdb;
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 		$collate = $wpdb->get_charset_collate();
 		$refs    = self::refs_table();
 		$items   = self::items_table();
+		$orphans = self::orphans_table();
 
 		dbDelta(
 			"CREATE TABLE {$refs} (
@@ -75,6 +83,19 @@ class HMC_DB {
 			) {$collate};"
 		);
 
+		dbDelta(
+			"CREATE TABLE {$orphans} (
+			path_key char(32) NOT NULL,
+			path varchar(400) NOT NULL DEFAULT '',
+			bytes bigint(20) unsigned NOT NULL DEFAULT 0,
+			mtime datetime NULL DEFAULT NULL,
+			kind varchar(12) NOT NULL DEFAULT '',
+			PRIMARY KEY  (path_key),
+			KEY kind (kind),
+			KEY bytes (bytes)
+			) {$collate};"
+		);
+
 		update_option( 'hmc_db_version', self::DB_VERSION, false );
 	}
 
@@ -106,6 +127,7 @@ class HMC_DB {
 				'retention_days' => 30,
 				'theme_files'    => 1,
 				'frontend'       => 1,
+				'orphans'        => 1,
 			)
 		);
 		foreach ( $s as $k => $v ) {

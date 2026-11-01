@@ -8,6 +8,7 @@ defined( 'ABSPATH' ) || exit;
 
 defined( 'WP_UNINSTALL_PLUGIN' ) || exit;
 
+require_once __DIR__ . '/includes/class-hmc-util.php';
 require_once __DIR__ . '/includes/class-hmc-db.php';
 require_once __DIR__ . '/includes/class-hmc-refs.php';
 require_once __DIR__ . '/includes/class-hmc-quarantine.php';
@@ -30,7 +31,8 @@ if ( $hmc_fail ) {
 global $wpdb;
 $wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}hmc_refs" );  // phpcs:ignore WordPress.DB.PreparedSQL
 $wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}hmc_items" ); // phpcs:ignore WordPress.DB.PreparedSQL
-foreach ( array( 'hmc_state', 'hmc_summary', 'hmc_settings', 'hmc_db_version', 'hmc_theme_files', 'hmc_front_errors' ) as $hmc_opt ) {
+$wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}hmc_orphans" ); // phpcs:ignore WordPress.DB.PreparedSQL
+foreach ( array( 'hmc_state', 'hmc_summary', 'hmc_settings', 'hmc_db_version', 'hmc_theme_files', 'hmc_front_errors', 'hmc_orphan_queue', 'hmc_orphan_summary' ) as $hmc_opt ) {
 	delete_option( $hmc_opt );
 }
 delete_transient( 'hmc_lock' );

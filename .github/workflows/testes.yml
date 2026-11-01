@@ -27,6 +27,11 @@ jobs:
       - name: Rodar os testes do atualizador
         run: php testes/teste-atualizador.php
 
+      - name: Testes de seguranca e de arquivos orfaos
+        run: |
+          php testes/teste-seguranca.php
+          php testes/teste-orfaos.php
+
       - name: Conferir que o código não usa recursos do PHP 8
         run: |
           if grep -rnP '\?\?=|\bmatch\s*\(|(?<![a-z0-9_>])fn\s*\(' --include='*.php' hmediacleaner; then
@@ -56,6 +61,8 @@ jobs:
         run: |
           find hmediacleaner -name '*.php' -print0 | xargs -0 -n1 php -l
           php testes/teste-atualizador.php
+          php testes/teste-seguranca.php
+          php testes/teste-orfaos.php
 
   build:
     runs-on: ubuntu-latest

@@ -3,7 +3,7 @@
  * Plugin Name:       HMediaCleaner
  * Plugin URI:        https://github.com/anderhofelmann/hmediacleaner
  * Description:       Encontra arquivos da biblioteca de mídia sem uso e duplicados, com análise abrangente do site, e os coloca em quarentena (restaurável) antes de qualquer exclusão.
- * Version:           0.3.0
+ * Version:           0.4.0
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            Anderson Höfelmann
@@ -16,13 +16,15 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'HMC_VERSION', '0.3.0' );
+define( 'HMC_VERSION', '0.4.0' );
 define( 'HMC_FILE', __FILE__ );
 define( 'HMC_DIR', plugin_dir_path( __FILE__ ) );
 define( 'HMC_URL', plugin_dir_url( __FILE__ ) );
 
+require_once HMC_DIR . 'includes/class-hmc-util.php';
 require_once HMC_DIR . 'includes/class-hmc-db.php';
 require_once HMC_DIR . 'includes/class-hmc-refs.php';
+require_once HMC_DIR . 'includes/class-hmc-orphans.php';
 require_once HMC_DIR . 'includes/class-hmc-scanner.php';
 require_once HMC_DIR . 'includes/class-hmc-quarantine.php';
 require_once HMC_DIR . 'includes/class-hmc-updater.php';

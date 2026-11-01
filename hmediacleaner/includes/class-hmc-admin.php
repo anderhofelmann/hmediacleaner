@@ -16,6 +16,7 @@ class HMC_Admin {
 		add_action( 'wp_ajax_hmc_scan', array( $this, 'ajax_scan' ) );
 		add_action( 'wp_ajax_hmc_bulk', array( $this, 'ajax_bulk' ) );
 		add_action( 'admin_post_hmc_export', array( $this, 'export' ) );
+		add_action( 'admin_post_hmc_orphans_export', array( $this, 'export_orphans' ) );
 		add_action( 'admin_post_hmc_settings', array( $this, 'save_settings' ) );
 		add_action( 'load-media_page_hmediacleaner', array( $this, 'handle_actions' ) );
 		add_filter( 'plugin_action_links_' . plugin_basename( HMC_FILE ), array( $this, 'action_links' ) );
@@ -245,8 +246,9 @@ class HMC_Admin {
 		$op  = '';
 		$ids = array();
 		if ( isset( $_GET['hmc_do'], $_GET['id'] ) ) {
-			check_admin_referer( 'hmc_item_' . (int) $_GET['id'] );
-			$op  = sanitize_key( $_GET['hmc_do'] );
+			// O nonce vale para esta operação neste anexo (um link de "restaurar" não serve para "excluir").
+			$op = sanitize_key( $_GET['hmc_do'] );
+			check_admin_referer( 'hmc_item_' . $op . '_' . (int) $_GET['id'] );
 			$ids = array( (int) $_GET['id'] );
 		} elseif ( ! empty( $_GET['ids'] ) && ( ! empty( $_GET['action'] ) || ! empty( $_GET['action2'] ) ) ) {
 			check_admin_referer( 'bulk-hmc_items' );
@@ -321,6 +323,7 @@ class HMC_Admin {
 				'retention_days' => $int( 'retention_days', 0, 3650, 30 ),
 				'theme_files'    => empty( $_POST['theme_files'] ) ? 0 : 1, // phpcs:ignore WordPress.Security.NonceVerification
 				'frontend'       => empty( $_POST['frontend'] ) ? 0 : 1, // phpcs:ignore WordPress.Security.NonceVerification
+					'orphans'        => empty( $_POST['orphans'] ) ? 0 : 1, // phpcs:ignore WordPress.Security.NonceVerification
 			),
 			false
 		);
@@ -352,14 +355,21 @@ class HMC_Admin {
 			<p class="hmc-lead"><?php esc_html_e( 'Encontra arquivos da biblioteca de mídia sem uso e duplicados, procurando referências em todo o site: conteúdo, produtos e galerias, construtores de página, categorias, configurações, arquivos do tema e as páginas já montadas. Os arquivos sem uso podem ir para a quarentena, de onde voltam com um clique.', 'hmediacleaner' ); ?></p>
 
 			<nav class="nav-tab-wrapper">
-				<a href="<?php echo esc_url( $base ); ?>" class="nav-tab <?php echo in_array( $tab, array( 'settings', 'about' ), true ) ? '' : 'nav-tab-active'; ?>"><?php esc_html_e( 'Relatório', 'hmediacleaner' ); ?></a>
+				<a href="<?php echo esc_url( $base ); ?>" class="nav-tab <?php echo in_array( $tab, array( 'settings', 'about', 'orphans' ), true ) ? '' : 'nav-tab-active'; ?>"><?php esc_html_e( 'Relatório', 'hmediacleaner' ); ?></a>
+				<a href="<?php echo esc_url( $base . '&tab=orphans' ); ?>" class="nav-tab <?php echo 'orphans' === $tab ? 'nav-tab-active' : ''; ?>"><?php esc_html_e( 'Órfãos', 'hmediacleaner' ); ?></a>
 				<a href="<?php echo esc_url( $base . '&tab=settings' ); ?>" class="nav-tab <?php echo 'settings' === $tab ? 'nav-tab-active' : ''; ?>"><?php esc_html_e( 'Configurações', 'hmediacleaner' ); ?></a>
 				<a href="<?php echo esc_url( $base . '&tab=about' ); ?>" class="nav-tab <?php echo 'about' === $tab ? 'nav-tab-active' : ''; ?>"><?php esc_html_e( 'Sobre', 'hmediacleaner' ); ?></a>
 			</nav>
 
 			<?php
-			if ( 'settings' === $tab || 'about' === $tab ) {
-				'settings' === $tab ? $this->settings_tab() : $this->about_tab();
+			if ( in_array( $tab, array( 'settings', 'about', 'orphans' ), true ) ) {
+				if ( 'settings' === $tab ) {
+					$this->settings_tab();
+				} elseif ( 'orphans' === $tab ) {
+					$this->orphans_tab( $running );
+				} else {
+					$this->about_tab();
+				}
 				echo '</div>';
 				return;
 			}
@@ -423,7 +433,8 @@ class HMC_Admin {
 					<th scope="row"><?php esc_html_e( 'Fontes adicionais', 'hmediacleaner' ); ?></th>
 					<td>
 						<label><input type="checkbox" name="theme_files" value="1" <?php checked( $settings['theme_files'] ); ?>> <?php esc_html_e( 'Ler os arquivos do tema e dos mu-plugins (imagens escritas no código do cabeçalho, rodapé e CSS)', 'hmediacleaner' ); ?></label><br>
-						<label><input type="checkbox" name="frontend" value="1" <?php checked( $settings['frontend'] ); ?>> <?php esc_html_e( 'Visitar as principais páginas do site e ler o HTML final (cabeçalho, rodapé e conteúdo inserido por plugins)', 'hmediacleaner' ); ?></label>
+						<label><input type="checkbox" name="frontend" value="1" <?php checked( $settings['frontend'] ); ?>> <?php esc_html_e( 'Visitar as principais páginas do site e ler o HTML final (cabeçalho, rodapé e conteúdo inserido por plugins)', 'hmediacleaner' ); ?></label><br>
+						<label><input type="checkbox" name="orphans" value="1" <?php checked( $settings['orphans'] ); ?>> <?php esc_html_e( 'Procurar arquivos órfãos no disco (miniaturas antigas, versões editadas, logs e arquivos soltos). Só relatório: nada é movido nem apagado.', 'hmediacleaner' ); ?></label>
 					</td>
 				</tr>
 			</table>
@@ -447,6 +458,114 @@ class HMC_Admin {
 			<?php submit_button( __( 'Salvar', 'hmediacleaner' ) ); ?>
 		</form>
 		<?php
+	}
+
+	/**
+	 * Arquivos órfãos: somente relatório. Nada aqui move ou apaga arquivos.
+	 */
+	private function orphans_tab( $running ) {
+		global $wpdb;
+		$sum   = get_option( 'hmc_orphan_summary' );
+		$kinds = HMC_Orphans::kinds();
+		$base  = admin_url( 'upload.php?page=hmediacleaner&tab=orphans' );
+		echo '<p class="hmc-lead">' . esc_html__( 'Arquivos que estão na pasta de uploads, mas que nenhum item da biblioteca de mídia registra: miniaturas de tamanhos antigos, versões editadas, cópias de compressão, logs e arquivos enviados por FTP. Costumam ocupar mais espaço do que os itens sem uso. Esta aba é só um relatório: nada é movido nem apagado.', 'hmediacleaner' ) . '</p>';
+		if ( ! $sum || $running ) {
+			echo '<p>' . esc_html( $running ? __( 'Aguarde o fim da análise.', 'hmediacleaner' ) : __( 'Faça uma análise (aba Relatório) para listar os arquivos órfãos.', 'hmediacleaner' ) ) . '</p>';
+			return;
+		}
+		$counts = isset( $sum['kinds'] ) && is_array( $sum['kinds'] ) ? $sum['kinds'] : array();
+		if ( ! HMC_DB::settings()['orphans'] ) {
+			echo '<div class="notice notice-info inline"><p>' . esc_html__( 'A procura de órfãos está desligada nas configurações.', 'hmediacleaner' ) . '</p></div>';
+		}
+		$free = 0;
+		foreach ( array( HMC_Orphans::THUMB, HMC_Orphans::SCALED, HMC_Orphans::EDIT, HMC_Orphans::JUNK, HMC_Orphans::EMPTY_, HMC_Orphans::LOOSE ) as $k ) {
+			$free += isset( $counts[ $k ] ) ? (int) $counts[ $k ]['bytes'] : 0;
+		}
+		/* translators: %s: tamanho */
+		echo '<p class="hmc-free">' . esc_html( sprintf( __( 'Espaço potencialmente recuperável (sem contar as cópias WebP): %s', 'hmediacleaner' ), size_format( $free, 1 ) ) ) . '</p>';
+
+		echo '<table class="widefat striped hmc-about-table"><thead><tr><th>' . esc_html__( 'Tipo', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Arquivos', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Espaço', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'O que é', 'hmediacleaner' ) . '</th></tr></thead><tbody>';
+		foreach ( $kinds as $k => $def ) {
+			$n = isset( $counts[ $k ] ) ? (int) $counts[ $k ]['count'] : 0;
+			if ( ! $n ) {
+				continue;
+			}
+			printf(
+				'<tr><td><a href="%s"><strong>%s</strong></a></td><td>%s</td><td>%s</td><td>%s</td></tr>',
+				esc_url( add_query_arg( 'kind', $k, $base ) ),
+				esc_html( $def[0] ),
+				esc_html( number_format_i18n( $n ) ),
+				esc_html( size_format( (int) $counts[ $k ]['bytes'], 1 ) ),
+				esc_html( $def[1] )
+			);
+		}
+		echo '</tbody></table>';
+
+		// Lista dos maiores arquivos (do tipo escolhido, se houver).
+		$kind  = isset( $_GET['kind'] ) ? sanitize_key( $_GET['kind'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
+		$kind  = isset( $kinds[ $kind ] ) ? $kind : '';
+		$t     = HMC_DB::orphans_table();
+		$where = $kind ? $wpdb->prepare( 'WHERE kind = %s', $kind ) : "WHERE kind <> 'in_use'";
+		$rows  = $wpdb->get_results( "SELECT path, bytes, mtime, kind FROM {$t} {$where} ORDER BY bytes DESC LIMIT 100" ); // phpcs:ignore WordPress.DB.PreparedSQL
+		$csv   = wp_nonce_url( add_query_arg( array( 'action' => 'hmc_orphans_export', 'kind' => $kind ), admin_url( 'admin-post.php' ) ), 'hmc_orphans_export' );
+		echo '<h2>' . esc_html( $kind ? $kinds[ $kind ][0] : __( 'Os 100 maiores', 'hmediacleaner' ) ) . '</h2>';
+		echo '<p class="hmc-export"><a class="button" href="' . esc_url( $csv ) . '">' . esc_html__( 'Exportar a lista completa (CSV)', 'hmediacleaner' ) . '</a>';
+		if ( $kind ) {
+			echo ' <a class="button" href="' . esc_url( $base ) . '">' . esc_html__( 'Ver todos os tipos', 'hmediacleaner' ) . '</a>';
+		}
+		echo '</p>';
+		if ( ! $rows ) {
+			echo '<p>' . esc_html__( 'Nenhum arquivo nesta lista.', 'hmediacleaner' ) . '</p>';
+			return;
+		}
+		$up = wp_upload_dir( null, false );
+		echo '<table class="widefat striped"><thead><tr><th>' . esc_html__( 'Arquivo', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Tipo', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Tamanho', 'hmediacleaner' ) . '</th><th>' . esc_html__( 'Modificado em', 'hmediacleaner' ) . '</th></tr></thead><tbody>';
+		foreach ( $rows as $r ) {
+			printf(
+				'<tr><td><a href="%s" target="_blank" rel="noopener">%s</a></td><td>%s</td><td>%s</td><td>%s</td></tr>',
+				esc_url( trailingslashit( $up['baseurl'] ) . $r->path ),
+				esc_html( $r->path ),
+				esc_html( isset( $kinds[ $r->kind ] ) ? $kinds[ $r->kind ][0] : $r->kind ),
+				esc_html( size_format( (int) $r->bytes, 1 ) ),
+				esc_html( $r->mtime ? mysql2date( get_option( 'date_format' ), $r->mtime ) : '' )
+			);
+		}
+		echo '</tbody></table>';
+	}
+
+	/**
+	 * CSV dos arquivos órfãos (somente leitura).
+	 */
+	public function export_orphans() {
+		check_admin_referer( 'hmc_orphans_export' );
+		if ( ! current_user_can( self::CAP ) ) {
+			wp_die( esc_html__( 'Sem permissão.', 'hmediacleaner' ) );
+		}
+		global $wpdb;
+		$kinds = HMC_Orphans::kinds();
+		$kind  = isset( $_GET['kind'] ) ? sanitize_key( $_GET['kind'] ) : '';
+		$kind  = isset( $kinds[ $kind ] ) ? $kind : '';
+		$t     = HMC_DB::orphans_table();
+		$where = $kind ? $wpdb->prepare( 'kind = %s', $kind ) : '1=1';
+		$up    = wp_upload_dir( null, false );
+
+		nocache_headers();
+		header( 'Content-Type: text/csv; charset=utf-8' );
+		header( 'Content-Disposition: attachment; filename=hmediacleaner-orfaos-' . ( $kind ? $kind : 'todos' ) . '-' . gmdate( 'Y-m-d' ) . '.csv' );
+		$out = fopen( 'php://output', 'w' );
+		fwrite( $out, "\xEF\xBB\xBF" ); // BOM para o Excel reconhecer UTF-8.
+		fputcsv( $out, array( 'Arquivo', 'URL', 'Tipo', 'Tamanho (bytes)', 'Modificado em' ), ';' );
+		$last = '';
+		do {
+			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT path_key, path, bytes, mtime, kind FROM {$t} WHERE {$where} AND path_key > %s ORDER BY path_key LIMIT 2000", $last ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+			foreach ( $rows as $r ) {
+				$last = $r->path_key;
+				// Células que começam com = + - @ viram texto: evita injeção de fórmula na planilha.
+				fputcsv( $out, HMC_Util::csv_row( array( $r->path, trailingslashit( $up['baseurl'] ) . $r->path, isset( $kinds[ $r->kind ] ) ? $kinds[ $r->kind ][0] : $r->kind, $r->bytes, $r->mtime ) ), ';' );
+			}
+		} while ( count( $rows ) === 2000 );
+		fclose( $out );
+		exit;
 	}
 
 	private function about_tab() {
@@ -657,25 +776,28 @@ class HMC_Admin {
 			$rows = $wpdb->get_results( "SELECT * FROM {$t} WHERE {$where} AND attachment_id > {$last} ORDER BY attachment_id LIMIT 2000" ); // phpcs:ignore WordPress.DB.PreparedSQL
 			foreach ( $rows as $r ) {
 				$last = (int) $r->attachment_id;
+				// Células que começam com = + - @ viram texto: evita injeção de fórmula na planilha.
 				fputcsv(
 					$out,
-					array(
-						$r->attachment_id,
-						$r->file,
-						trailingslashit( $up['baseurl'] ) . $r->file,
-						isset( $label[ $r->status ] ) ? $label[ $r->status ] : $r->status,
-						$r->reason,
-						$r->used_in,
-						$r->parent_id ? $r->parent_id : '',
-						$r->bytes,
-						$r->files_count,
-						$r->uploaded,
-						$r->dup_of ? $r->dup_of : '',
-						$r->q_status,
-						$r->q_date,
-						$r->q_hits,
-						$r->q_last_hit,
-						$r->q_referer,
+					HMC_Util::csv_row(
+						array(
+							$r->attachment_id,
+							$r->file,
+							trailingslashit( $up['baseurl'] ) . $r->file,
+							isset( $label[ $r->status ] ) ? $label[ $r->status ] : $r->status,
+							$r->reason,
+							$r->used_in,
+							$r->parent_id ? $r->parent_id : '',
+							$r->bytes,
+							$r->files_count,
+							$r->uploaded,
+							$r->dup_of ? $r->dup_of : '',
+							$r->q_status,
+							$r->q_date,
+							$r->q_hits,
+							$r->q_last_hit,
+							$r->q_referer,
+						)
 					),
 					';'
 				);

@@ -143,7 +143,8 @@ class HMC_List_Table extends WP_List_Table {
 	}
 
 	private static function action_url( $op, $id ) {
-		return wp_nonce_url( add_query_arg( array( 'hmc_do' => $op, 'id' => (int) $id ) ), 'hmc_item_' . (int) $id );
+		// O nonce inclui a operação: o link de "restaurar" não serve para "excluir".
+		return wp_nonce_url( add_query_arg( array( 'hmc_do' => $op, 'id' => (int) $id ) ), 'hmc_item_' . sanitize_key( $op ) . '_' . (int) $id );
 	}
 
 	protected function column_thumb( $item ) {

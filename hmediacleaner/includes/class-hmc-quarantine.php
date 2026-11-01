@@ -53,6 +53,10 @@ class HMC_Quarantine {
 		if ( ! file_exists( $d . '/index.php' ) ) {
 			file_put_contents( $d . '/index.php', "<?php\n// Silence is golden.\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions
 		}
+		// IIS: o .htaccess não vale lá. (No Nginx é preciso uma regra no servidor; veja o README.)
+		if ( ! file_exists( $d . '/web.config' ) ) {
+			file_put_contents( $d . '/web.config', "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<configuration><system.webServer><authorization><deny users=\"*\" /></authorization></system.webServer></configuration>\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		}
 		return is_dir( $d ) && wp_is_writable( $d );
 	}
 
@@ -61,8 +65,9 @@ class HMC_Quarantine {
 	 * miniaturas, original antes do -scaled, cópias de edição, cópia de compressão e versões WebP.
 	 */
 	public static function attachment_files( $id, $base = null ) {
-		$file = get_post_meta( $id, '_wp_attached_file', true );
-		if ( ! $file ) {
+		// Os caminhos vêm do banco e não são confiáveis: qualquer "../" ou caminho absoluto é descartado.
+		$file = HMC_Util::safe_rel( get_post_meta( $id, '_wp_attached_file', true ) );
+		if ( false === $file ) {
 			return array();
 		}
 		$base   = null === $base ? self::basedir() : trailingslashit( $base );
@@ -73,20 +78,23 @@ class HMC_Quarantine {
 		if ( is_array( $md ) ) {
 			if ( ! empty( $md['sizes'] ) && is_array( $md['sizes'] ) ) {
 				foreach ( $md['sizes'] as $size ) {
-					if ( ! empty( $size['file'] ) ) {
-						$names[] = $size['file'];
+					$n = is_array( $size ) && isset( $size['file'] ) ? HMC_Util::safe_name( $size['file'] ) : false;
+					if ( false !== $n ) {
+						$names[] = $n;
 					}
 				}
 			}
-			if ( ! empty( $md['original_image'] ) ) {
-				$names[] = $md['original_image'];
+			$n = isset( $md['original_image'] ) ? HMC_Util::safe_name( $md['original_image'] ) : false;
+			if ( false !== $n ) {
+				$names[] = $n;
 			}
 		}
 		$backup = get_post_meta( $id, '_wp_attachment_backup_sizes', true );
 		if ( is_array( $backup ) ) {
 			foreach ( $backup as $size ) {
-				if ( ! empty( $size['file'] ) ) {
-					$names[] = $size['file'];
+				$n = is_array( $size ) && isset( $size['file'] ) ? HMC_Util::safe_name( $size['file'] ) : false;
+				if ( false !== $n ) {
+					$names[] = $n;
 				}
 			}
 		}
@@ -101,8 +109,10 @@ class HMC_Quarantine {
 		}
 		$out = array();
 		foreach ( array_unique( $all ) as $n ) {
-			if ( is_file( $base . $prefix . $n ) ) {
-				$out[] = $prefix . $n;
+			$rel = HMC_Util::safe_rel( $prefix . $n );
+			// Só arquivos comuns que, resolvidos os links simbólicos, estão mesmo dentro de uploads.
+			if ( false !== $rel && 0 !== strpos( $rel, 'hmc-quarantine/' ) && HMC_Util::is_plain_file( $base . $rel ) && HMC_Util::inside( $base . $rel, $base ) ) {
+				$out[] = $rel;
 			}
 		}
 		return $out;
@@ -180,7 +190,8 @@ class HMC_Quarantine {
 		foreach ( $files as $rel ) {
 			$dst = $qbase . $rel;
 			wp_mkdir_p( dirname( $dst ) );
-			if ( file_exists( $dst ) || ! @rename( $base . $rel, $dst ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			// O destino precisa ficar, de fato, dentro da pasta da quarentena.
+			if ( ! HMC_Util::dir_inside( dirname( $dst ), self::dir() ) || file_exists( $dst ) || ! @rename( $base . $rel, $dst ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
 				foreach ( $moved as $back ) {
 					@rename( $qbase . $back, $base . $back ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 				}
@@ -233,19 +244,30 @@ class HMC_Quarantine {
 		}
 		$base  = self::basedir();
 		$qbase = self::dir() . '/' . $id . '/';
-		foreach ( $q['files'] as $rel ) {
+
+		// Os caminhos gravados na quarentena vêm do banco: se algum for suspeito (por exemplo com
+		// "../"), nada é movido, para a restauração nunca escrever fora de uploads.
+		$files = array();
+		foreach ( (array) $q['files'] as $rel ) {
+			$ok = HMC_Util::safe_rel( $rel );
+			if ( false === $ok ) {
+				return __( 'Os dados da quarentena deste anexo são inválidos; a restauração foi cancelada por segurança.', 'hmediacleaner' );
+			}
+			$files[] = $ok;
+		}
+		foreach ( $files as $rel ) {
 			if ( file_exists( $base . $rel ) ) {
 				/* translators: %s: arquivo */
 				return sprintf( __( 'Já existe um arquivo em %s; a restauração foi cancelada para não sobrescrevê-lo.', 'hmediacleaner' ), $rel );
 			}
 		}
 		$done = array();
-		foreach ( $q['files'] as $rel ) {
-			if ( ! is_file( $qbase . $rel ) ) {
-				continue; // Arquivo já ausente na quarentena: restaura o que existir.
+		foreach ( $files as $rel ) {
+			if ( ! HMC_Util::is_plain_file( $qbase . $rel ) || ! HMC_Util::inside( $qbase . $rel, self::dir() ) ) {
+				continue; // Arquivo já ausente (ou suspeito) na quarentena: restaura o que for seguro.
 			}
 			wp_mkdir_p( dirname( $base . $rel ) );
-			if ( ! @rename( $qbase . $rel, $base . $rel ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			if ( ! HMC_Util::dir_inside( dirname( $base . $rel ), $base ) || ! @rename( $qbase . $rel, $base . $rel ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
 				foreach ( $done as $back ) {
 					@rename( $base . $back, $qbase . $back ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 				}
@@ -309,6 +331,12 @@ class HMC_Quarantine {
 		if ( ! $id ) {
 			return;
 		}
+		// Qualquer visitante pode pedir esse endereço: no máximo uma contagem a cada 5 minutos por
+		// arquivo, para não permitir escrita repetida no banco nem inflar o alerta de "falta".
+		if ( get_transient( 'hmc_hit_' . $id ) ) {
+			return;
+		}
+		set_transient( 'hmc_hit_' . $id, 1, 5 * MINUTE_IN_SECONDS );
 		$referer = isset( $_SERVER['HTTP_REFERER'] ) ? substr( esc_url_raw( wp_unslash( $_SERVER['HTTP_REFERER'] ) ), 0, 255 ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
 		$wpdb->query( $wpdb->prepare( "UPDATE {$t} SET q_hits = q_hits + 1, q_last_hit = %s, q_referer = %s WHERE attachment_id = %d", current_time( 'mysql' ), $referer, $id ) ); // phpcs:ignore WordPress.DB.PreparedSQL
 		$q = get_post_meta( $id, self::META, true );
@@ -328,7 +356,7 @@ class HMC_Quarantine {
 		$line = array( wp_date( 'Y-m-d H:i:s' ), $user && $user->exists() ? $user->user_login : 'sistema', $action, $id, implode( ' | ', $files ) );
 		$fh   = fopen( self::dir() . '/hmc-log.csv', 'a' ); // phpcs:ignore WordPress.WP.AlternativeFunctions
 		if ( $fh ) {
-			fputcsv( $fh, $line, ';' );
+			fputcsv( $fh, HMC_Util::csv_row( $line ), ';' );
 			fclose( $fh ); // phpcs:ignore WordPress.WP.AlternativeFunctions
 		}
 	}

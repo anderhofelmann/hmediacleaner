@@ -90,6 +90,58 @@ class HMC_CLI {
 	}
 
 	/**
+	 * Resume (ou lista) os arquivos órfãos encontrados na última análise. Somente leitura.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--kind=<kind>]
+	 * : Lista os arquivos de um tipo: thumb, scaled, edit, webp, junk, empty, loose ou in_use.
+	 *
+	 * [--limit=<n>]
+	 * : Quantos arquivos listar, dos maiores para os menores.
+	 * ---
+	 * default: 100
+	 * ---
+	 *
+	 * [--format=<format>]
+	 * : table, csv ou json.
+	 * ---
+	 * default: table
+	 * ---
+	 */
+	public function orphans( $args, $assoc ) {
+		global $wpdb;
+		$kinds = HMC_Orphans::kinds();
+		$sum   = get_option( 'hmc_orphan_summary' );
+		if ( ! $sum ) {
+			WP_CLI::error( 'Nenhuma análise concluída. Rode: wp hmediacleaner scan' );
+		}
+		if ( empty( $assoc['kind'] ) ) {
+			$rows = array();
+			foreach ( $kinds as $k => $def ) {
+				$v = isset( $sum['kinds'][ $k ] ) ? $sum['kinds'][ $k ] : array( 'count' => 0, 'bytes' => 0 );
+				if ( $v['count'] ) {
+					$rows[] = array( 'Tipo' => $k, 'O que é' => $def[0], 'Arquivos' => $v['count'], 'Espaço' => size_format( $v['bytes'], 1 ) );
+				}
+			}
+			if ( ! $rows ) {
+				WP_CLI::success( 'Nenhum arquivo órfão encontrado.' );
+				return;
+			}
+			WP_CLI\Utils\format_items( $assoc['format'], $rows, array( 'Tipo', 'O que é', 'Arquivos', 'Espaço' ) );
+			WP_CLI::log( 'Somente relatório: nada é movido nem apagado. Detalhes de um tipo: wp hmediacleaner orphans --kind=<tipo>' );
+			return;
+		}
+		$kind = sanitize_key( $assoc['kind'] );
+		if ( ! isset( $kinds[ $kind ] ) ) {
+			WP_CLI::error( 'Tipo inválido. Use: ' . implode( ', ', array_keys( $kinds ) ) );
+		}
+		$limit = max( 1, min( 100000, (int) $assoc['limit'] ) );
+		$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT path, bytes, mtime FROM ' . HMC_DB::orphans_table() . ' WHERE kind = %s ORDER BY bytes DESC LIMIT %d', $kind, $limit ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+		WP_CLI\Utils\format_items( $assoc['format'], $rows, array( 'path', 'bytes', 'mtime' ) );
+	}
+
+	/**
 	 * Mostra onde um anexo é usado, segundo a última análise.
 	 *
 	 * ## OPTIONS

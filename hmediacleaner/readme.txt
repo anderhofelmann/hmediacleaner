@@ -5,7 +5,7 @@ Tags: media, cleaner, unused images, duplicates, quarantine, woocommerce
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.0
+Stable tag: 0.4.0
 License: GPLv2 or later
 
 Encontra arquivos da biblioteca de mídia sem uso e duplicados, com análise abrangente, e os coloca em quarentena restaurável antes de qualquer exclusão.
@@ -22,6 +22,7 @@ considerá-lo sem uso:
 * configurações do site, do tema, widgets e plugins;
 * dados de usuários;
 * arquivos do tema, do tema pai e dos mu-plugins (imagens no código e no CSS);
+* arquivos órfãos no disco, que nenhum anexo registra (relatório, sem apagar nada);
 * o HTML final das principais páginas (cabeçalho, rodapé e o que os plugins inserem).
 
 Reconhece IDs de anexo, URLs completas, URLs de miniaturas (-300x300), versões -scaled, WebP e
@@ -61,6 +62,23 @@ caminhos relativos. Na dúvida, considera o arquivo em uso. Também encontra arq
 * `wp hmediacleaner purge` – exclusão definitiva dos itens elegíveis.
 
 == Changelog ==
+
+= 0.4.0 =
+* Segurança: os caminhos de arquivo vindos do banco (metadados do anexo e dados da quarentena)
+  passam por validação estrita; um metadado adulterado com "../" não consegue mais fazer a
+  quarentena mover ou restaurar arquivos fora da pasta de uploads. Links simbólicos nunca são seguidos
+* Segurança: o atualizador só oferece releases do próprio repositório, por HTTPS e com SHA-256
+  publicado (release sem hash é recusada) e confere o hash no arquivo que será de fato instalado
+* Segurança: contagem de acessos à quarentena com limite de frequência (impede escrita repetida
+  no banco por pedidos de visitantes); CSV (exportação e log) neutraliza fórmulas de planilha;
+  desserialização sem instanciar classes; nonce das ações por item vinculado à operação;
+  o endereço do site não é mais enviado ao GitHub; pasta da quarentena protegida também no IIS
+* Novo: aba "Órfãos" e comando "wp hmediacleaner orphans" — arquivos que estão em uploads mas que
+  nenhum anexo registra (miniaturas antigas, versões editadas, logs, arquivos soltos). Somente relatório
+* Mais rápido: a leitura dos campos personalizados descarta no banco pedidos, cupons e campos sem
+  mídia (em lojas com muitos pedidos, a maior parte da tabela); menos chamadas ao disco por anexo;
+  comparação de duplicatas em duas fases (início do arquivo e só então o conteúdo inteiro)
+* O link do plugin passou a apontar para o repositório (agora público)
 
 = 0.3.0 =
 * Atualização automática a partir das releases do GitHub: o painel avisa quando há versão nova
